@@ -19,17 +19,17 @@ class InstallCommand(install):
         if self.no_ml:
             dist = self.distribution
             dist.packages=find_packages(exclude=[
-                'tests',
-                'tests.*',
-                'talon.signature',
-                'talon.signature.*',
+                "tests",
+                "tests.*",
+                "talon.signature",
+                "talon.signature.*",
             ])
-            for not_required in ['numpy', 'scipy', 'scikit-learn==0.16.1']:
+            for not_required in ["numpy", "scipy", "scikit-learn==0.24.1"]:
                 dist.install_requires.remove(not_required)
 
 
 setup(name='talon',
-      version='1.4.8',
+      version='1.6.0',
       description=("Mailgun library "
                    "to extract message quotations and signatures."),
       long_description=open("README.rst").read(),
@@ -44,8 +44,8 @@ setup(name='talon',
       include_package_data=True,
       zip_safe=True,
       install_requires=[
-          "lxml>=2.3.3",
-          "regex>=1",
+          "lxml",
+          "regex",
           "numpy",
           "flask",
           "joblib",
@@ -58,7 +58,7 @@ setup(name='talon',
           ],
       tests_require=[
           "mock",
-          "nose>=1.2.1",
+          "nose",
           "coverage"
           ]
       )
