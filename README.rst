@@ -1,4 +1,4 @@
-talon
+talon-web
 =====
 
 Mailgun library to extract message quotations and signatures.
