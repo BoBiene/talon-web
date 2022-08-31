@@ -18,6 +18,7 @@ RUN apt-get update && \
 COPY . /app
 
 WORKDIR /app
+EXPOSE 5000
 
 RUN pip3 install -r requirements.txt
 RUN pip3 install .
