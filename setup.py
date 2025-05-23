@@ -51,15 +51,13 @@ setup(name='talon',
           "joblib",
           "scipy",
           "scikit-learn>=1.0.0",
-          'chardet>=1.0.1',
-          'cchardet>=0.3.5',
+          'charset-normalizer>=3.0.0',
           'cssselect',
           'six>=1.10.0',
           'html5lib'
-          ],
-      tests_require=[
-          "mock",
-          "nose",
-          "coverage"
+          ],      tests_require=[
+          "pytest>=7.0.0",
+          "pytest-cov>=4.0.0",
+          "coverage>=7.0.0"
           ]
       )

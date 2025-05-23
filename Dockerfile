@@ -8,22 +8,30 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libatlas3-base \
     libxml2 \
+    libxml2-dev \
+    libxslt1-dev \
     libffi8 \
+    libffi-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first for better Docker layer caching
+# Copy requirements and setup files first for better Docker layer caching
 COPY requirements.txt .
 COPY setup.py .
 COPY MANIFEST.in .
+COPY README.md .
 
 # Install Python dependencies
 RUN pip3 install --upgrade pip --no-cache-dir && \
     pip3 install --no-cache-dir -r requirements.txt && \
-    pip3 install --no-cache-dir .
+    pip3 install --no-cache-dir . && \
+    apt-get remove -y build-essential libxml2-dev libxslt1-dev libffi-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy application code
 COPY . .
