@@ -8,6 +8,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+env/
 build/
 develop-eggs/
 dist/
@@ -19,13 +20,18 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+debug.log
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
@@ -37,37 +43,42 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
-*.py,cover
 .hypothesis/
 .pytest_cache/
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Jupyter Notebook
+.ipynb_checkpoints
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# pyenv
+.python-version
 
-# VS Code
-.vscode/
-*.code-workspace
-
-# PyCharm
-.idea/
+# pipenv
+Pipfile.lock
 
 # mypy
 .mypy_cache/
 .dmypy.json
-dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# VS Code
+.vscode/
+
+# IDEs
+.idea/
+.DS_Store
+*.swp
+*.bak
+
+# dotenv
+.env
+
+# Logs
+*.log
 
 # Docker
-.dockerignore
+*.pid
 
 # OS generated files
 .DS_Store
@@ -80,7 +91,6 @@ test_output/
 logs/
 
 # Legacy entries (keeping for compatibility)
-pip-log.txt
 *.mo
 .mr.developer.cfg
 .project
@@ -102,9 +112,3 @@ tramp
 
 # Trial temp
 _trial_temp
-
-# OSX
-.DS_Store
-
-# vim-backup
-*.bak

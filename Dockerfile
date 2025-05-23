@@ -1,9 +1,9 @@
 FROM python:3.12-slim
 
-# Create non-root user for security
+# Sicherheit: Non-root User
 RUN groupadd -r talon && useradd -r -g talon talon
 
-# Install system dependencies
+# System-Abhängigkeiten für lxml, numpy, etc.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     libatlas3-base \
@@ -16,19 +16,15 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Set working directory
 WORKDIR /app
 
-# Ensure Python can find the talon package
+# Python-Path setzen, damit das Paket immer gefunden wird
 ENV PYTHONPATH=/app
 
-# Copy requirements and setup files first for better Docker layer caching
-COPY requirements.txt .
-COPY setup.py .
-COPY MANIFEST.in .
-COPY README.md .
+# Nur relevante Dateien für den Build kopieren
+COPY requirements.txt setup.py MANIFEST.in README.md ./
 
-# Install Python dependencies
+# Python-Abhängigkeiten installieren
 RUN pip3 install --upgrade pip --no-cache-dir && \
     pip3 install --no-cache-dir -r requirements.txt && \
     pip3 install --no-cache-dir . && \
@@ -36,22 +32,18 @@ RUN pip3 install --upgrade pip --no-cache-dir && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy application code
+# Restlichen Code kopieren
 COPY . .
 
-# Change ownership to non-root user
+# Ownership an non-root user übergeben
 RUN chown -R talon:talon /app
 
-# Switch to non-root user
 USER talon
 
-# Expose port
 EXPOSE 5000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD python3 -c "import requests; requests.get('http://localhost:5000/health', timeout=10)" || exit 1
 
-# Run application
 ENTRYPOINT ["python3"]
 CMD ["/app/talon/web/bootstrap.py"]

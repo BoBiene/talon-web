@@ -28,7 +28,7 @@ test_data = {
     "sender": "max.mustermann@beispiel.de"
 }
 
-def test_endpoint(url, data):
+def _test_endpoint(url, data):
     """Test an endpoint with given data"""
     print(f"\n=== Testing {url} ===")
     try:
@@ -59,9 +59,9 @@ if __name__ == "__main__":
     print("Make sure the Flask app is running first!")
     
     # Test the Talon-based endpoint
-    test_endpoint(f"{base_url}/talon/html-to-markdown", test_data)
+    _test_endpoint(f"{base_url}/talon/html-to-markdown", test_data)
     
     # Test the direct conversion endpoint
-    test_endpoint(f"{base_url}/talon/html-to-markdown-direct", {"html": test_html})
+    _test_endpoint(f"{base_url}/talon/html-to-markdown-direct", {"html": test_html})
     
     print("\nDone!")

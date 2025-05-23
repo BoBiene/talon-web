@@ -1,10 +1,11 @@
+from flask import Flask, request, jsonify
+import html2text
 from talon import signature, quotations
-from flask import Flask, request, jsonify, json
 from werkzeug.exceptions import HTTPException, BadRequest
 import talon
 import logging
-import html2text
 import re
+import json
 
 talon.init()
 
@@ -158,19 +159,17 @@ def html_to_markdown():
         
         log.debug('HTML content received: ' + str(len(html_content)) + ' characters')
         
-        # First extract text from HTML using Talon's existing functionality
-        # This will remove quotations/replies
-        clean_text = quotations.extract_from_html(html_content)
+        # 1. Entferne HTML-Signaturmuster
+        cleaned_html = _remove_html_signature_patterns(html_content)
+        removed_html_signature = None
+        if cleaned_html != html_content:
+            removed_html_signature = 'HTML signature patterns removed.'
+        
+        # 2. Entferne Zitate mit Talon
+        clean_text = quotations.extract_from_html(cleaned_html)
         log.debug('Text after quotation removal: ' + clean_text)
         
-        # Then remove signature if sender is provided
-        signature_text = None
-        if sender:
-            clean_text, signature_text = signature.extract(clean_text, sender=sender)
-            log.debug('Text after signature removal: ' + clean_text)
-            log.debug('Extracted signature: ' + str(signature_text))
-        
-        # Configure html2text for optimal markdown conversion
+        # 3. Konvertiere zu Markdown
         h = html2text.HTML2Text()
         h.ignore_links = False
         h.ignore_images = False
@@ -180,24 +179,28 @@ def html_to_markdown():
         h.use_automatic_links = True
         h.protect_links = True
         
-        # Convert the cleaned text back to HTML temporarily for proper markdown conversion
-        # Since Talon returns plain text, we need to handle it appropriately
         if clean_text:
-            # If we have plain text, convert it to simple HTML first
             simple_html = clean_text.replace('\n', '<br>\n')
             markdown_content = h.handle(simple_html)
         else:
             markdown_content = ""
         
-        # Clean up extra whitespace and normalize line breaks
         markdown_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', markdown_content)
         markdown_content = markdown_content.strip()
         
-        # Prepare response
+        # 4. Finale Talon-Signatur-Extraktion auf Markdown-Text
+        removed_signature = None
+        final_markdown = markdown_content
+        if sender and markdown_content:
+            final_markdown, removed_signature = signature.extract(markdown_content, sender=sender)
+        # Wenn durch Pattern-Matching eine Signatur entfernt wurde, aber Talon keine findet, setze removed_signature entsprechend
+        if not removed_signature and removed_html_signature:
+            removed_signature = 'HTML signature removed'
         response_data = {
             'original_html': html_content,
-            'markdown': markdown_content,
-            'removed_signature': str(signature_text) if signature_text else None,
+            'markdown': final_markdown,
+            'removed_html_signature': removed_html_signature,
+            'removed_signature': str(removed_signature) if removed_signature else None,
             'sender': sender,
             'success': True
         }
@@ -268,44 +271,41 @@ def html_to_markdown_direct():
 
 def _remove_html_signature_patterns(html_content):
     """
-    Remove common email signature patterns from HTML
+    Remove common email signature patterns from HTML (defensiver: entfernt nur die Signaturblöcke, nicht alles danach)
     """
-    # Common signature separators and patterns
     signature_patterns = [
-        # Horizontal line signatures
-        r'<hr[^>]*>.*$',
         # Signature divs with class
-        r'<div[^>]*class[^>]*signature[^>]*>.*?</div>',
-        r'<div[^>]*class[^>]*sig[^>]*>.*?</div>',
-        # Double dash separator
-        r'--\s*<br[^>]*>.*$',
-        r'<p[^>]*>--\s*</p>.*$',
-        # Common German signatures
-        r'<div[^>]*>Mit freundlichen Grüßen.*?</div>.*$',
-        r'<p[^>]*>Mit freundlichen Grüßen.*$',
-        r'<div[^>]*>Freundliche Grüße.*?</div>.*$',
-        r'<p[^>]*>Freundliche Grüße.*$',
-        r'<div[^>]*>Viele Grüße.*?</div>.*$',
-        r'<p[^>]*>Viele Grüße.*$',
-        # Common English signatures
-        r'<div[^>]*>Best regards.*?</div>.*$',
-        r'<p[^>]*>Best regards.*$',
-        r'<div[^>]*>Kind regards.*?</div>.*$',
-        r'<p[^>]*>Kind regards.*$',
-        r'<div[^>]*>Sincerely.*?</div>.*$',
-        r'<p[^>]*>Sincerely.*$',
-        r'<div[^>]*>Thanks.*?</div>.*$',
-        r'<p[^>]*>Thanks.*$',
+        r'<div[^>]*class=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
+        r'<div[^>]*class=["\']?[^>]*sig[^>]*["\']?[^>]*>.*?</div>',
         # Gmail/Outlook signature blocks
         r'<div[^>]*gmail_signature[^>]*>.*?</div>',
-        r'<div[^>]*id[^>]*signature[^>]*>.*?</div>',
+        r'<div[^>]*id=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
+        # Tabellen mit E-Mail-Adressen (Signaturtabellen)
+        r'<table[^>]*>.*?(?:[\w\.-]+@[\w\.-]+).*?</table>',
+        # Common German/English signatures (nur einzelne Blöcke, nicht alles danach)
+        r'<div[^>]*>Mit freundlichen Grüßen.*?</div>',
+        r'<p[^>]*>Mit freundlichen Grüßen.*?</p>',
+        r'<div[^>]*>Freundliche Grüße.*?</div>',
+        r'<p[^>]*>Freundliche Grüße.*?</p>',
+        r'<div[^>]*>Viele Grüße.*?</div>',
+        r'<p[^>]*>Viele Grüße.*?</p>',
+        r'<div[^>]*>Best regards.*?</div>',
+        r'<p[^>]*>Best regards.*?</p>',
+        r'<div[^>]*>Kind regards.*?</div>',
+        r'<p[^>]*>Kind regards.*?</p>',
+        r'<div[^>]*>Sincerely.*?</div>',
+        r'<p[^>]*>Sincerely.*?</p>',
+        r'<div[^>]*>Thanks.*?</div>',
+        r'<p[^>]*>Thanks.*?</p>',
+        # Double dash separator (nur einzelne Blöcke)
+        r'<p[^>]*>--\s*</p>',
+        r'--\s*<br[^>]*>',
+        # Horizontal line signatures (nur <hr>, nicht alles danach)
+        r'<hr[^>]*>',
     ]
-    
     cleaned_html = html_content
-    
     for pattern in signature_patterns:
         cleaned_html = re.sub(pattern, '', cleaned_html, flags=re.DOTALL | re.IGNORECASE)
-    
     return cleaned_html
 
 

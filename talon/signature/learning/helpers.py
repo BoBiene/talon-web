@@ -13,31 +13,28 @@ from talon.signature.constants import SIGNATURE_MAX_LINES
 
 rc = re.compile
 
-RE_EMAIL = rc('\S@\S')
-RE_RELAX_PHONE = rc('(\(? ?[\d]{2,3} ?\)?.{,3}?){2,}')
+RE_EMAIL = rc(r'\S@\S')
+RE_RELAX_PHONE = rc(r'(\(? ?[\d]{2,3} ?\)?.{,3}?){2,}')
 RE_URL = rc(r"""https?://|www\.[\S]+\.[\S]""")
 
 # Taken from:
 # http://www.cs.cmu.edu/~vitor/papers/sigFilePaper_finalversion.pdf
 # Line matches the regular expression "^[\s]*---*[\s]*$".
-RE_SEPARATOR = rc('^[\s]*---*[\s]*$')
+RE_SEPARATOR = rc(r'^[\s]*---*[\s]*$')
 
 # Taken from:
 # http://www.cs.cmu.edu/~vitor/papers/sigFilePaper_finalversion.pdf
 # Line has a sequence of 10 or more special characters.
-RE_SPECIAL_CHARS = rc(('^[\s]*([\*]|#|[\+]|[\^]|-|[\~]|[\&]|[\$]|_|[\!]|'
-                       '[\/]|[\%]|[\:]|[\=]){10,}[\s]*$'))
+RE_SPECIAL_CHARS = rc(r'^[\s]*([\*]|#|[\+]|[\^]|-|[\~]|[\&]|[\$]|_|[\!]|[\/]|[\%]|[\:]|[\=]){10,}[\s]*$')
 
-RE_SIGNATURE_WORDS = rc(('(T|t)hank.*,|(B|b)est|(R|r)egards|'
-                         '^sent[ ]{1}from[ ]{1}my[\s,!\w]*$|BR|(S|s)incerely|'
-                         '(C|c)orporation|Group'))
+RE_SIGNATURE_WORDS = rc(r'(T|t)hank.*,|(B|b)est|(R|r)egards|^sent[ ]{1}from[ ]{1}my[\s,!\w]*$|BR|(S|s)incerely|(C|c)orporation|Group')
 
 # Taken from:
 # http://www.cs.cmu.edu/~vitor/papers/sigFilePaper_finalversion.pdf
 # Line contains a pattern like Vitor R. Carvalho or William W. Cohen.
-RE_NAME = rc('[A-Z][a-z]+\s\s?[A-Z][\.]?\s\s?[A-Z][a-z]+')
+RE_NAME = rc(r'[A-Z][a-z]+\s\s?[A-Z][\.]?\s\s?[A-Z][a-z]+')
 
-INVALID_WORD_START = rc('\(|\+|[\d]')
+INVALID_WORD_START = rc(r'\(|\+|[\d]')
 
 BAD_SENDER_NAMES = [
     # known mail domains
