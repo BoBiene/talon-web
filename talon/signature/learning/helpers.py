@@ -179,7 +179,7 @@ def punctuation_percent(s):
 
 def capitalized_words_percent(s):
     """Returns capitalized words percent."""
-    words = re.split('\s', s)
+    words = re.split(r'\s', s)
     words = [w for w in words if w.strip()]
     words = [w for w in words if len(w) > 2]    
     capitalized_words_counter = 0

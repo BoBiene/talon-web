@@ -269,10 +269,26 @@ def html_to_markdown_direct():
         return jsonify({'error': str(e), 'success': False}), 500
 
 
+# Bekannte Grußformeln (deutsch/englisch, inkl. Abkürzungen)
+SALUTATIONS = set([
+    # Deutsch
+    "Mit freundlichen Grüßen", "Freundliche Grüße", "Viele Grüße", "Beste Grüße", "Herzliche Grüße", "Liebe Grüße", "Schöne Grüße", "MfG", "VG", "Vg", "LG", "Lg", "Mit besten Grüßen", "Gruß", "Hochachtungsvoll",
+    # Englisch
+    "Best regards", "Kind regards", "Regards", "Sincerely", "Yours sincerely", "Yours truly", "Yours faithfully", "Thank you", "Thanks", "Cheers", "Warm regards", "With best wishes", "Respectfully", "Best wishes", "Warmest regards", "Best", "All the best", "Best regards,", "Best wishes,", "Best,"
+])
+
+# Separate short and long salutations for more restrictive matching
+SHORT_SALUTATIONS = {s for s in SALUTATIONS if len(s.replace(',', '').replace('.', '').strip()) <= 4 or s in {"Best", "Best,", "Thanks", "Gruß", "LG", "Lg", "VG", "Vg", "MfG"}}
+LONG_SALUTATIONS = SALUTATIONS - SHORT_SALUTATIONS
+
+
 def _remove_html_signature_patterns(html_content):
     """
-    Remove common email signature patterns from HTML (defensiver: entfernt nur die Signaturblöcke, nicht alles danach)
+    Remove common email signature patterns from HTML (dynamisch aus Grußformel-Liste)
     """
+    # Patterns für div, p, span, table mit Grußformeln
+    salutes_regex = "|".join([re.escape(s) for s in LONG_SALUTATIONS])
+    short_salutes_regex = "|".join([re.escape(s) for s in SHORT_SALUTATIONS])
     signature_patterns = [
         # Signature divs with class
         r'<div[^>]*class=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
@@ -280,23 +296,19 @@ def _remove_html_signature_patterns(html_content):
         # Gmail/Outlook signature blocks
         r'<div[^>]*gmail_signature[^>]*>.*?</div>',
         r'<div[^>]*id=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
-        # Tabellen mit E-Mail-Adressen (Signaturtabellen)
-        r'<table[^>]*>.*?(?:[\w\.-]+@[\w\.-]+).*?</table>',
+        # Tabellen mit typischen Signaturinhalten (Name, Titel, E-Mail, Links, Grußformeln)
+        r'<table[^>]*>.*?(?:[A-Z][a-z]+ [A-Z][a-z]+|[\w\.-]+@[\w\.-]+|Operations Engineer|Customer Solutions|regards|Grüße|Mit freundlichen|Kind regards|Best regards|Sincerely|Thanks|VG|MfG|LG|Vg|Lg|Warm regards|Best wishes|www\\.|linkedin|instagram|youtube|XING|address as of|USt-IdNr|Managing Director|privacy agreement|Datenschutzvereinbarung).*?</table>',
+        # <p>, <span>, <div> mit langen Grußformeln: NUR wenn sie am Block-Anfang stehen (restriktiv, optional Komma und <br>)
+        rf'<p[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</p>',
+        rf'<span[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</span>',
+        rf'<div[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</div>',
+        # <p>, <span>, <div> mit kurzen Grußformeln: nur wenn sie allein im Block stehen (restriktiv, optional Komma und <br>)
+        rf'<p[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</p>',
+        rf'<span[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</span>',
+        rf'<div[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</div>',
         # Common German/English signatures (nur einzelne Blöcke, nicht alles danach)
-        r'<div[^>]*>Mit freundlichen Grüßen.*?</div>',
-        r'<p[^>]*>Mit freundlichen Grüßen.*?</p>',
-        r'<div[^>]*>Freundliche Grüße.*?</div>',
-        r'<p[^>]*>Freundliche Grüße.*?</p>',
-        r'<div[^>]*>Viele Grüße.*?</div>',
-        r'<p[^>]*>Viele Grüße.*?</p>',
-        r'<div[^>]*>Best regards.*?</div>',
-        r'<p[^>]*>Best regards.*?</p>',
-        r'<div[^>]*>Kind regards.*?</div>',
-        r'<p[^>]*>Kind regards.*?</p>',
-        r'<div[^>]*>Sincerely.*?</div>',
-        r'<p[^>]*>Sincerely.*?</p>',
-        r'<div[^>]*>Thanks.*?</div>',
-        r'<p[^>]*>Thanks.*?</p>',
+        *[rf'<div[^>]*>{re.escape(s)}.*?</div>' for s in SALUTATIONS],
+        *[rf'<p[^>]*>{re.escape(s)}.*?</p>' for s in SALUTATIONS],
         # Double dash separator (nur einzelne Blöcke)
         r'<p[^>]*>--\s*</p>',
         r'--\s*<br[^>]*>',
