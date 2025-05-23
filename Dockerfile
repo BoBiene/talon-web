@@ -19,6 +19,9 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
+# Ensure Python can find the talon package
+ENV PYTHONPATH=/app
+
 # Copy requirements and setup files first for better Docker layer caching
 COPY requirements.txt .
 COPY setup.py .
