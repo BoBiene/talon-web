@@ -1,28 +1,46 @@
-FROM python:3.9-slim-buster
+FROM python:3.12-slim
 
+# Create non-root user for security
+RUN groupadd -r talon && useradd -r -g talon talon
+
+# Install system dependencies
 RUN apt-get update && \
-    apt-get install -y \
-    # build-essential \
-    # git curl python3-dev \
+    apt-get install -y --no-install-recommends \
     libatlas3-base \
-    # libatlas-base-dev liblapack-dev \
     libxml2 \
-    # libxml2-dev \
-    libffi6 
-    # libffi-dev musl-dev libxslt-dev
+    libffi8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# RUN apt-get -yqq update
-# RUN apt-get install -yqq python3
-# RUN apt-get -yqq install python3-pip
-
-COPY . /app
-
+# Set working directory
 WORKDIR /app
+
+# Copy requirements first for better Docker layer caching
+COPY requirements.txt .
+COPY setup.py .
+COPY MANIFEST.in .
+
+# Install Python dependencies
+RUN pip3 install --upgrade pip --no-cache-dir && \
+    pip3 install --no-cache-dir -r requirements.txt && \
+    pip3 install --no-cache-dir .
+
+# Copy application code
+COPY . .
+
+# Change ownership to non-root user
+RUN chown -R talon:talon /app
+
+# Switch to non-root user
+USER talon
+
+# Expose port
 EXPOSE 5000
 
-RUN pip3 install -r requirements.txt
-RUN pip3 install .
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python3 -c "import requests; requests.get('http://localhost:5000/health', timeout=10)" || exit 1
 
-ENTRYPOINT [ "python3" ]
-
-CMD [ "/app/talon/web/bootstrap.py" ]
+# Run application
+ENTRYPOINT ["python3"]
+CMD ["/app/talon/web/bootstrap.py"]
