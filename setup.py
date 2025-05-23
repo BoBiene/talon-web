@@ -42,23 +42,22 @@ setup(name='talon',
       },
       packages=find_packages(exclude=['tests', 'tests.*']),
       include_package_data=True,
-      zip_safe=True,
-      install_requires=[
-          "lxml",
-          "regex",
+      zip_safe=True,      install_requires=[
+          "lxml>=2.3.3",
+          "regex>=1",
           "numpy",
-          "flask",
+          "flask>=2.0.0",
+          "html2text>=2024.2.26",
           "joblib",
           "scipy",
-          'chardet>=1.0.1',
-          'cchardet>=0.3.5',
+          "scikit-learn>=1.0.0",
+          'charset-normalizer>=3.0.0',
           'cssselect',
           'six>=1.10.0',
           'html5lib'
-          ],
-      tests_require=[
-          "mock",
-          "nose",
-          "coverage"
+          ],      tests_require=[
+          "pytest>=7.0.0",
+          "pytest-cov>=4.0.0",
+          "coverage>=7.0.0"
           ]
       )

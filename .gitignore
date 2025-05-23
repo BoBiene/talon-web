@@ -1,35 +1,97 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
 *.py[cod]
+*$py.class
 
 # C extensions
 *.so
 
-# Packages
-*.egg
-*.egg-info
-dist
-build
-eggs
-parts
-bin
-var
-sdist
-develop-eggs
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
 .installed.cfg
-lib
-lib64
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
 
 # Installer logs
+debug.log
 pip-log.txt
+pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
 .coverage
-.tox
+.coverage.*
+.cache
 nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
 
-# Translations
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# mypy
+.mypy_cache/
+.dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# VS Code
+.vscode/
+
+# IDEs
+.idea/
+.DS_Store
+*.swp
+*.bak
+
+# dotenv
+.env
+
+# Logs
+*.log
+
+# Docker
+*.pid
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.tmp
+*.temp
+test_output/
+logs/
+
+# Legacy entries (keeping for compatibility)
 *.mo
-
-# Mr Developer
 .mr.developer.cfg
 .project
 .pydevproject
@@ -39,7 +101,6 @@ nosetests.xml
 /.emacs.desktop
 /.emacs.desktop.lock
 .elc
-.idea
 .cache
 auto-save-list
 tramp
@@ -51,9 +112,4 @@ tramp
 
 # Trial temp
 _trial_temp
-
-# OSX
-.DS_Store
-
-# vim-backup
-*.bak
+legacy_tests_backup/*

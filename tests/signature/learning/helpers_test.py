@@ -45,13 +45,13 @@ VALID_PHONE_NUMBERS = [e.strip() for e in VALID.splitlines() if e.strip()]
 
 def test_match_phone_numbers():
     for phone in VALID_PHONE_NUMBERS:
-        ok_(RE_RELAX_PHONE.search(phone), "{} should be matched".format(phone))
+        ok_(RE_RELAX_PHONE.search(phone))
 
 
 def test_match_names():
     names = ['John R. Doe']
     for name in names:
-        ok_(RE_NAME.match(name), "{} should be matched".format(name))
+        ok_(RE_NAME.match(name))
 
 
 # Now test helpers functions
@@ -213,4 +213,4 @@ def test_has_signature():
     assert_false(h.has_signature('', ''))
     # dont consider empty strings when analysing signature
     with patch.object(h, 'SIGNATURE_MAX_LINES', 1):
-        ok_('sender\n\n', 'sender@example.com')
+        ok_(h.has_signature('sender\n\n', 'sender@example.com'))
