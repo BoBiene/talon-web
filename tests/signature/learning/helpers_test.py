@@ -213,4 +213,4 @@ def test_has_signature():
     assert_false(h.has_signature('', ''))
     # dont consider empty strings when analysing signature
     with patch.object(h, 'SIGNATURE_MAX_LINES', 1):
-        ok_('sender\n\n', 'sender@example.com')
+        ok_(h.has_signature('sender\n\n', 'sender@example.com'))

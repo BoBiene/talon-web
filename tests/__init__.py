@@ -5,6 +5,19 @@ from unittest.mock import *  # provides Mock, patch, etc.
 
 import talon
 
+# pytest-compatible assertion helpers (nose.tools replacements)
+def assert_false(val, msg=None):
+    assert not val, msg
+
+def assert_true(val, msg=None):
+    assert val, msg
+
+def eq_(a, b, msg=None):
+    assert a == b, msg
+
+def ok_(val, msg=None):
+    assert val, msg
+
 # Pytest-compatible assertion functions to replace nose.tools
 def assert_false(val):
     assert not val

@@ -6,18 +6,8 @@ from __future__ import absolute_import
 import re
 from unittest.mock import Mock, patch
 
-# Use pytest-style assertions instead of nose.tools
-def assert_false(val):
-    assert not val
-
-def assert_true(val):
-    assert val
-
-def eq_(a, b):
-    assert a == b
-
-def ok_(val):
-    assert val
+# Import pytest-compatible assertion helpers from tests.__init__
+from . import assert_false, assert_true, eq_, ok_
 
 from tests.fixtures import (OLK_SRC_BODY_SECTION,
                             REPLY_QUOTATIONS_SHARE_BLOCK,
