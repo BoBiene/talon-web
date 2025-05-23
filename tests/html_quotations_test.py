@@ -118,10 +118,8 @@ def test_validate_output_html():
 <div/>
 """
     out = quotations.extract_from_html(msg_body)
-    ok_('<html>' in out and '</html>' in out,
-        'Invalid HTML - <html>/</html> tag not present')
-    ok_('<div/>' not in out,
-        'Invalid HTML output - <div/> element is not valid')
+    ok_('<html>' in out and '</html>' in out)
+    ok_('<div/>' not in out)
 
 
 def test_gmail_quote():
