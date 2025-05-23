@@ -282,10 +282,18 @@ SHORT_SALUTATIONS = {s for s in SALUTATIONS if len(s.replace(',', '').replace('.
 LONG_SALUTATIONS = SALUTATIONS - SHORT_SALUTATIONS
 
 
+def strip_inline_tags(html):
+    """Entfernt alle span, font, b, i, u, em, strong Tags (nur Tags, nicht Inhalt)."""
+    # Entferne nur die Tags, nicht den Inhalt
+    return re.sub(r'</?(span|font|b|i|u|em|strong)[^>]*>', '', html, flags=re.IGNORECASE)
+
+
 def _remove_html_signature_patterns(html_content):
     """
     Remove common email signature patterns from HTML (dynamisch aus Grußformel-Liste)
+    Vorverarbeitung: Entfernt alle span, font, b, i, u, em, strong Tags (nur Tags, nicht Inhalt).
     """
+    html_content = strip_inline_tags(html_content)
     # Patterns für div, p, span, table mit Grußformeln
     salutes_regex = "|".join([re.escape(s) for s in LONG_SALUTATIONS])
     short_salutes_regex = "|".join([re.escape(s) for s in SHORT_SALUTATIONS])
@@ -318,6 +326,8 @@ def _remove_html_signature_patterns(html_content):
     cleaned_html = html_content
     for pattern in signature_patterns:
         cleaned_html = re.sub(pattern, '', cleaned_html, flags=re.DOTALL | re.IGNORECASE)
+    # Entferne leere div/p/span-Blöcke (mit oder ohne Attribute)
+    cleaned_html = re.sub(r'<(div|p|span)[^>]*>\s*</\\1>', '', cleaned_html, flags=re.IGNORECASE)
     return cleaned_html
 
 
