@@ -112,3 +112,4 @@ tramp
 
 # Trial temp
 _trial_temp
+legacy_tests_backup/*

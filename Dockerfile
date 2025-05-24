@@ -40,10 +40,10 @@ RUN chown -R talon:talon /app
 
 USER talon
 
-EXPOSE 5000
+EXPOSE 5505
 
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python3 -c "import requests; requests.get('http://localhost:5000/health', timeout=10)" || exit 1
+    CMD python3 -c "import requests; requests.get('http://localhost:5505/health', timeout=10)" || exit 1
 
 ENTRYPOINT ["python3"]
 CMD ["/app/talon/web/bootstrap.py"]

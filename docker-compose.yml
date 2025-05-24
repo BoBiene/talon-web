@@ -4,7 +4,7 @@ services:
   talon-web:
     build: .
     ports:
-      - "5000:5000"
+      - "5505:5505"
     environment:
       - FLASK_ENV=development
       - FLASK_DEBUG=true
@@ -13,7 +13,7 @@ services:
       - /app/__pycache__
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5505/health"]
       interval: 30s
       timeout: 10s
       retries: 3

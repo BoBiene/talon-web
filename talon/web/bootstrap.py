@@ -133,7 +133,8 @@ def get_reply_html():
             log.debug('text: ' + text)
             json_response = {
                 'email_content': email_content, 'email_reply': text}
-    else:        raise BadRequest("Required parameter 'email_content' is missing.")
+    else:
+        raise BadRequest("Required parameter 'email_content' is missing.")
     return jsonify(json_response)
 
 
@@ -187,13 +188,28 @@ def html_to_markdown():
         
         markdown_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', markdown_content)
         markdown_content = markdown_content.strip()
-        
-        # 4. Finale Talon-Signatur-Extraktion auf Markdown-Text
+          # 4. Finale Signatur-Extraktion auf Markdown-Text mit verbesserter Erkennung
         removed_signature = None
         final_markdown = markdown_content
+        
         if sender and markdown_content:
-            final_markdown, removed_signature = signature.extract(markdown_content, sender=sender)
-        # Wenn durch Pattern-Matching eine Signatur entfernt wurde, aber Talon keine findet, setze removed_signature entsprechend
+            # Säubere Markdown für bessere Talon-Erkennung 
+            clean_text_for_talon = _clean_markdown_for_signature_extraction(markdown_content)
+            
+            # Versuche Talon-Extraktion auf dem gesäuberten Text
+            cleaned_text, talon_signature = signature.extract(clean_text_for_talon, sender=sender)
+            
+            if talon_signature:
+                # Wenn Talon eine Signatur gefunden hat, wende das auf das originale Markdown an
+                final_markdown = _apply_signature_removal_to_markdown(markdown_content, clean_text_for_talon, cleaned_text)
+                removed_signature = talon_signature
+            else:
+                # Fallback: eigene Markdown-Signatur-Patterns
+                final_markdown, fallback_signature = _remove_markdown_signature_patterns(markdown_content, sender)
+                if fallback_signature:
+                    removed_signature = fallback_signature
+        
+        # Wenn durch Pattern-Matching eine Signatur entfernt wurde, aber keine finale Signatur gefunden wurde
         if not removed_signature and removed_html_signature:
             removed_signature = 'HTML signature removed'
         response_data = {
@@ -269,17 +285,47 @@ def html_to_markdown_direct():
         return jsonify({'error': str(e), 'success': False}), 500
 
 
-# Bekannte Grußformeln (deutsch/englisch, inkl. Abkürzungen)
-SALUTATIONS = set([
-    # Deutsch
-    "Mit freundlichen Grüßen", "Freundliche Grüße", "Viele Grüße", "Beste Grüße", "Herzliche Grüße", "Liebe Grüße", "Schöne Grüße", "MfG", "VG", "Vg", "LG", "Lg", "Mit besten Grüßen", "Gruß", "Hochachtungsvoll",
-    # Englisch
-    "Best regards", "Kind regards", "Regards", "Sincerely", "Yours sincerely", "Yours truly", "Yours faithfully", "Thank you", "Thanks", "Cheers", "Warm regards", "With best wishes", "Respectfully", "Best wishes", "Warmest regards", "Best", "All the best", "Best regards,", "Best wishes,", "Best,"
-])
+# Enhanced salutation detection with better categorization
+COMMON_SALUTATIONS = {
+    # Common German salutations
+    "Mit freundlichen Grüßen", "Freundliche Grüße", "Viele Grüße", "Beste Grüße", 
+    "Herzliche Grüße", "Liebe Grüße", "Schöne Grüße", "Mit besten Grüßen", 
+    "Hochachtungsvoll", "Alles Gute", "Bis bald",
+    
+    # Common English salutations  
+    "Best regards", "Kind regards", "Warm regards", "Warmest regards", "Regards",
+    "Sincerely", "Yours sincerely", "Yours truly", "Yours faithfully",
+    "Best wishes", "With best wishes", "Thank you", "Thanks", "Cheers",
+    "All the best", "Take care", "Looking forward", "Respectfully",
+    
+    # Multi-language combinations (German/English)
+    "Schöne Grüße / Best regards", "Viele Grüße / Best regards", "Beste Grüße / Kind regards",
+    "Mit freundlichen Grüßen / Best regards", "Freundliche Grüße / Best regards",
+    "Best regards / Schöne Grüße", "Kind regards / Viele Grüße",
+    
+    # With punctuation variants
+    "Best regards,", "Kind regards,", "Best wishes,", "Sincerely,", "Thanks,", "Cheers,",
+    "Mit freundlichen Grüßen,", "Viele Grüße,", "Beste Grüße,",
+    "Schöne Grüße / Best regards,", "Viele Grüße / Best regards,",
+}
 
-# Separate short and long salutations for more restrictive matching
-SHORT_SALUTATIONS = {s for s in SALUTATIONS if len(s.replace(',', '').replace('.', '').strip()) <= 4 or s in {"Best", "Best,", "Thanks", "Gruß", "LG", "Lg", "VG", "Vg", "MfG"}}
-LONG_SALUTATIONS = SALUTATIONS - SHORT_SALUTATIONS
+# Abbreviations and short forms that need very careful matching
+SHORT_RISKY_SALUTATIONS = {
+    "MfG", "VG", "Vg", "LG", "Lg", "Best", "Best,", "Thanks", "Gruß", "Gruss"
+}
+
+# Safe short salutations that are unlikely to appear in normal text
+SAFE_SHORT_SALUTATIONS = {
+    "Hochachtungsvoll", "Yours faithfully", "Yours sincerely", "Yours truly"
+}
+
+# Combine all salutations
+ALL_SALUTATIONS = COMMON_SALUTATIONS | SHORT_RISKY_SALUTATIONS | SAFE_SHORT_SALUTATIONS
+
+# Categorize for different matching strategies
+LONG_SALUTATIONS = {s for s in ALL_SALUTATIONS if len(s.replace(',', '').replace('.', '').strip()) > 8}
+MEDIUM_SALUTATIONS = {s for s in ALL_SALUTATIONS if 4 < len(s.replace(',', '').replace('.', '').strip()) <= 8}
+SHORT_SALUTATIONS = SHORT_RISKY_SALUTATIONS
 
 
 def strip_inline_tags(html):
@@ -290,46 +336,225 @@ def strip_inline_tags(html):
 
 def _remove_html_signature_patterns(html_content):
     """
-    Remove common email signature patterns from HTML (dynamisch aus Grußformel-Liste)
-    Vorverarbeitung: Entfernt alle span, font, b, i, u, em, strong Tags (nur Tags, nicht Inhalt).
+    Remove common email signature patterns from HTML with improved precision
+    - Enhanced salutation categorization for better matching
+    - Much more restrictive table pattern matching
+    - Better debugging and logging
     """
+    original_content = html_content
     html_content = strip_inline_tags(html_content)
-    # Patterns für div, p, span, table mit Grußformeln
-    salutes_regex = "|".join([re.escape(s) for s in LONG_SALUTATIONS])
+      # Build regex patterns for different salutation categories
+    long_salutes_regex = "|".join([re.escape(s) for s in LONG_SALUTATIONS])
+    medium_salutes_regex = "|".join([re.escape(s) for s in MEDIUM_SALUTATIONS]) 
     short_salutes_regex = "|".join([re.escape(s) for s in SHORT_SALUTATIONS])
+    
     signature_patterns = [
-        # Signature divs with class
+        # 1. Explicit signature containers (highest confidence)
         r'<div[^>]*class=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
         r'<div[^>]*class=["\']?[^>]*sig[^>]*["\']?[^>]*>.*?</div>',
-        # Gmail/Outlook signature blocks
         r'<div[^>]*gmail_signature[^>]*>.*?</div>',
         r'<div[^>]*id=["\']?[^>]*signature[^>]*["\']?[^>]*>.*?</div>',
-        # Tabellen mit typischen Signaturinhalten (Name, Titel, E-Mail, Links, Grußformeln)
-        r'<table[^>]*>.*?(?:[A-Z][a-z]+ [A-Z][a-z]+|[\w\.-]+@[\w\.-]+|Operations Engineer|Customer Solutions|regards|Grüße|Mit freundlichen|Kind regards|Best regards|Sincerely|Thanks|VG|MfG|LG|Vg|Lg|Warm regards|Best wishes|www\\.|linkedin|instagram|youtube|XING|address as of|USt-IdNr|Managing Director|privacy agreement|Datenschutzvereinbarung).*?</table>',
-        # <p>, <span>, <div> mit langen Grußformeln: NUR wenn sie am Block-Anfang stehen (restriktiv, optional Komma und <br>)
-        rf'<p[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</p>',
-        rf'<span[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</span>',
-        rf'<div[^>]*>\s*({salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</div>',
-        # <p>, <span>, <div> mit kurzen Grußformeln: nur wenn sie allein im Block stehen (restriktiv, optional Komma und <br>)
-        rf'<p[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</p>',
-        rf'<span[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</span>',
-        rf'<div[^>]*>\s*({short_salutes_regex})\s*,?\s*(<br[^>]*>\s*)*</div>',
-        # Common German/English signatures (nur einzelne Blöcke, nicht alles danach)
-        *[rf'<div[^>]*>{re.escape(s)}.*?</div>' for s in SALUTATIONS],
-        *[rf'<p[^>]*>{re.escape(s)}.*?</p>' for s in SALUTATIONS],
-        # Double dash separator (nur einzelne Blöcke)
-        r'<p[^>]*>--\s*</p>',
+
+        # 2. CONSERVATIVE salutation patterns - only remove if followed by clear signature content
+        rf'<div[^>]*>\s*({long_salutes_regex})\s*,?\s*</div>\s*<div[^>]*>[^<]*(?:[\w\.-]+@[\w\.-]+|Engineer|Director|Manager|CEO)[^<]*</div>',
+        rf'<p[^>]*>\s*({long_salutes_regex})\s*,?\s*</p>\s*<(?:div|p)[^>]*>[^<]*(?:[\w\.-]+@[\w\.-]+|Engineer|Director|Manager|CEO)[^<]*</(?:div|p)>',
+        
+        rf'<div[^>]*>\s*({medium_salutes_regex})\s*,?\s*</div>\s*<div[^>]*>[^<]*(?:[\w\.-]+@[\w\.-]+|Engineer|Director|Manager|CEO)[^<]*</div>',
+        rf'<p[^>]*>\s*({medium_salutes_regex})\s*,?\s*</p>\s*<(?:div|p)[^>]*>[^<]*(?:[\w\.-]+@[\w\.-]+|Engineer|Director|Manager|CEO)[^<]*</(?:div|p)>',
+
+        # 3. Signature tables with salutation - very conservative
+        rf'<div[^>]*>\s*({long_salutes_regex}|{medium_salutes_regex})\s*,?\s*</div>\s*<table[^>]*>.*?[\w\.-]+@[\w\.-]+.*?</table>',
+        
+        # 4. Stand-alone signature elements at end only
+        rf'<table[^>]*>.*?(?:[\w\.-]+@[\w\.-]+).*?(?:Engineer|Director|Manager|CEO).*?</table>\s*$',
+        
+        # 5. Explicit signature separators  
+        r'<hr[^>]*/?>\s*',        r'<p[^>]*>\s*--\s*</p>',
         r'--\s*<br[^>]*>',
-        # Horizontal line signatures (nur <hr>, nicht alles danach)
-        r'<hr[^>]*>',
     ]
+    
     cleaned_html = html_content
-    for pattern in signature_patterns:
+    removed_parts = []
+    pattern_hits = {}
+    
+    for i, pattern in enumerate(signature_patterns):
+        matches = list(re.finditer(pattern, cleaned_html, flags=re.DOTALL | re.IGNORECASE))
+        if matches:
+            pattern_name = [
+                "Explicit signature containers", "Explicit signature containers", "Explicit signature containers", "Explicit signature containers",
+                "Conservative long salutations", "Conservative long salutations",
+                "Conservative medium salutations", "Conservative medium salutations", 
+                "Signature tables with salutation",
+                "Signature tables at end",
+                "Signature separators", "Signature separators", "Signature separators"
+            ][i]
+            pattern_hits[pattern_name] = len(matches)
+            
+            for match in matches:
+                matched_text = match.group(0)
+                if len(matched_text) > 100:
+                    removed_parts.append(matched_text[:100] + "...")
+                else:
+                    removed_parts.append(matched_text)
+        
         cleaned_html = re.sub(pattern, '', cleaned_html, flags=re.DOTALL | re.IGNORECASE)
-    # Entferne leere div/p/span-Blöcke (mit oder ohne Attribute)
+    
+    # Clean up empty blocks
     cleaned_html = re.sub(r'<(div|p|span)[^>]*>\s*</\\1>', '', cleaned_html, flags=re.IGNORECASE)
+    
+    # Enhanced logging for debugging
+    if cleaned_html != original_content:
+        total_removed = len(original_content) - len(cleaned_html)
+        log.debug(f"Signature removal: {total_removed} characters removed ({len(removed_parts)} parts)")
+        for pattern_name, count in pattern_hits.items():
+            log.debug(f"  {pattern_name}: {count} matches")
+        # Show first removed part for debugging
+        if removed_parts:
+            log.debug(f"First removed: {removed_parts[0]}")
+    
     return cleaned_html
 
 
+def _clean_markdown_for_signature_extraction(markdown_content):
+    """
+    Säubert Markdown-Text für bessere Talon Signatur-Erkennung
+    Entfernt Links, komplexe Formatierungen, aber behält die Textstruktur
+    """
+    # Entferne Markdown-Links aber behalte den Text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', markdown_content)
+    
+    # Entferne andere Markdown-Formatierungen
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # Bold
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # Italic
+    text = re.sub(r'`([^`]+)`', r'\1', text)        # Code
+    text = re.sub(r'#+\s*', '', text)               # Headers
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)  # List items
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)  # Numbered lists
+    text = re.sub(r'^\s*>\s+', '', text, flags=re.MULTILINE)      # Blockquotes
+    text = re.sub(r'^\s*\|\s*', '', text, flags=re.MULTILINE)     # Tables
+    text = re.sub(r'\s*\|\s*$', '', text, flags=re.MULTILINE)     # Tables
+    text = re.sub(r'^-+$', '', text, flags=re.MULTILINE)          # Table separators
+    
+    # Normalisiere Whitespace
+    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    text = text.strip()
+    
+    return text
+
+
+def _apply_signature_removal_to_markdown(original_markdown, clean_text, cleaned_text):
+    """
+    Wendet die Signatur-Entfernung vom gesäuberten Text auf das originale Markdown an
+    Intelligente Mapping-Strategie: Sucht nach dem Punkt im Original-Markdown,
+    der dem Signatur-Start im gesäuberten Text entspricht
+    """
+    if len(cleaned_text) >= len(clean_text):
+        return original_markdown
+    
+    # Berechne wie viel vom gesäuberten Text entfernt wurde
+    removed_chars = len(clean_text) - len(cleaned_text)
+    
+    if removed_chars < 10:  # Zu wenig entfernt, wahrscheinlich kein echte Signatur
+        return original_markdown
+    
+    # Finde den Schnittpunkt im gesäuberten Text
+    if len(cleaned_text) > 50:
+        # Nimm die letzten 50 Zeichen des gesäuberten Texts als Referenz
+        reference_text = cleaned_text[-50:].strip()
+    else:
+        # Bei kurzem Text, nimm alles
+        reference_text = cleaned_text.strip()
+    
+    # Suche diese Referenz im Original-Markdown
+    if reference_text:
+        # Normalisiere beide Texte für besseren Vergleich
+        orig_normalized = re.sub(r'\s+', ' ', original_markdown.strip())
+        ref_normalized = re.sub(r'\s+', ' ', reference_text)
+        
+        # Suche die Position im normalisierten Original-Text
+        pos = orig_normalized.find(ref_normalized)
+        if pos >= 0:
+            # Berechne ungefähre Position im ursprünglichen Text
+            # Berücksichtige Whitespace-Unterschiede
+            lines = original_markdown.split('\n')
+            char_count = 0
+            
+            for i, line in enumerate(lines):
+                char_count += len(re.sub(r'\s+', ' ', line.strip()))
+                if char_count >= pos + len(ref_normalized):
+                    # Finde einen guten Schnittpunkt (Leerzeile oder Ende eines Absatzes)
+                    for j in range(i, max(0, i-3), -1):
+                        if not lines[j].strip():  # Leerzeile gefunden
+                            return '\n'.join(lines[:j]).strip()
+                    # Fallback: Schneide nach dem aktuellen Absatz
+                    return '\n'.join(lines[:i+1]).strip()
+    
+    # Fallback: Verwende Ratio-basierte Methode
+    removed_ratio = removed_chars / len(clean_text)
+    if removed_ratio > 0.15:  # Nur wenn signifikant was entfernt wurde
+        estimated_cut_point = int(len(original_markdown) * (1 - removed_ratio))
+        lines = original_markdown[:estimated_cut_point].split('\n')
+        
+        # Suche rückwärts nach einer guten Schnittstelle
+        for i in range(len(lines) - 1, max(0, len(lines) - 10), -1):
+            line = lines[i].strip()
+            if not line or line in ['---', '* * *', '___']:  # Leere Zeile oder Separator
+                return '\n'.join(lines[:i]).strip()
+        
+        return '\n'.join(lines).strip()
+    
+    return original_markdown
+
+
+def _remove_markdown_signature_patterns(markdown_content, sender=None):
+    """
+    Fallback-Signatur-Entfernung für Markdown mit Multi-Sprach-Unterstützung
+    """
+    lines = markdown_content.split('\n')
+    signature_start = None
+    
+    # Multi-Sprach-Salutationen erweitert
+    salutations = [
+        "Schöne Grüße / Best regards", "Best regards / Schöne Grüße",
+        "Mit freundlichen Grüßen / Best regards", "Best regards / Mit freundlichen Grüßen",
+        "Viele Grüße / Best regards", "Best regards / Viele Grüße",
+        "Freundliche Grüße / Kind regards", "Kind regards / Freundliche Grüße",
+        "Mit freundlichen Grüßen", "Freundliche Grüße", "Viele Grüße", "Beste Grüße",
+        "Herzliche Grüße", "Liebe Grüße", "Schöne Grüße", "Mit besten Grüßen",
+        "Best regards", "Kind regards", "Warm regards", "Sincerely", "Regards",
+        "Best wishes", "Thank you", "Thanks", "Cheers", "All the best"
+    ]
+    
+    # Suche nach Signatur-Start
+    for i, line in enumerate(lines):
+        line_clean = line.strip()
+        
+        # Direkte Salutation-Erkennung
+        for salutation in salutations:
+            if salutation.lower() in line_clean.lower():
+                signature_start = i
+                break
+        
+        if signature_start is not None:
+            break
+        
+        # Auch nach typischen Signatur-Indikatoren suchen
+        if any(indicator in line_clean for indicator in ['---', '* * *', '__']):
+            signature_start = i
+            break
+            
+        # Email-Adresse oder typische Signatur-Elemente
+        if re.search(r'[\w\.-]+@[\w\.-]+', line_clean) and i > len(lines) // 2:
+            signature_start = max(0, i - 2)  # Etwas früher anfangen
+            break
+    
+    if signature_start is not None:
+        content_part = '\n'.join(lines[:signature_start]).strip()
+        signature_part = '\n'.join(lines[signature_start:]).strip()
+        return content_part, signature_part
+    
+    return markdown_content, None
+
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    app.run(debug=True, host='0.0.0.0', port=5505)

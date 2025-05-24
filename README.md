@@ -11,7 +11,7 @@ Talon can be used as a webservice. Can be invoked by using the script.
 
 ### Pre-Build Docker-Image
 ```
-docker run -p 5000:5000 ghcr.io/bobiene/talon-web:latest 
+docker run -p 5505:5505 ghcr.io/bobiene/talon-web:latest 
 ```
 
 ### From Source
@@ -134,7 +134,7 @@ Sample
 For endpoint `/talon/signature`, invoked as a `get` or `post` request. Curl Sample:
 
 ```
-curl --location --request GET 'http://127.0.0.1:5000/talon/signature' \
+curl --location --request GET 'http://127.0.0.1:5505/talon/signature' \
 --form 'email_content="Hi,
 
 This is just a test.
@@ -242,7 +242,7 @@ Direct HTML to Markdown conversion with basic signature pattern recognition, wit
 
 **With Talon's intelligent detection:**
 ```bash
-curl -X POST 'http://127.0.0.1:5000/talon/html-to-markdown' \
+curl -X POST 'http://127.0.0.1:5505/talon/html-to-markdown' \
 --header 'Content-Type: application/json' \
 --data '{
     "html": "<h1>Test</h1><p>Important content</p><hr><p>Best regards<br>Max Mustermann</p>",
@@ -252,7 +252,7 @@ curl -X POST 'http://127.0.0.1:5000/talon/html-to-markdown' \
 
 **Direct conversion:**
 ```bash
-curl -X POST 'http://127.0.0.1:5000/talon/html-to-markdown-direct' \
+curl -X POST 'http://127.0.0.1:5505/talon/html-to-markdown-direct' \
 --header 'Content-Type: application/json' \
 --data '{
     "html": "<h1>Test</h1><p>Important content</p><hr><p>Best regards<br>Max Mustermann</p>"

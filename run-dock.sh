@@ -5,4 +5,4 @@
 
 NAME=talon-web
 
-docker run -p 5000:5000 -it $NAME /app/talon/web/bootstrap.py
+docker run -p 5505:5505 -it $NAME /app/talon/web/bootstrap.py
