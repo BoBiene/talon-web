@@ -120,6 +120,14 @@ def html_to_markdown():
         h.unicode_snob = True
         markdown = h.handle(clean_html)
 
+        # --- POSTPROCESSING: Whitespace-Optimierung ---
+        # 1. Mehr als 2 aufeinanderfolgende Leerzeilen auf maximal 2 reduzieren
+        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
+        # 2. Zeilen mit nur Whitespace entfernen
+        markdown = '\n'.join([l.rstrip() for l in markdown.splitlines()])
+        # 3. Am Anfang/Ende trimmen
+        markdown = markdown.strip()
+
         # 3. Plain text für Talon extrahieren
         plain_text = soup.get_text(separator="\n").strip()
         
@@ -127,10 +135,11 @@ def html_to_markdown():
         text = quotations.extract_from_plain(plain_text)
         sig = None
         if sender:
-            text, sig = signature.extract(text, sender=sender)        # 5. Grußformel + Name aus Markdown beibehalten, danach abschneiden
+            text, sig = signature.extract(text, sender=sender)
+        # 5. Grußformel + Name aus Markdown beibehalten, danach abschneiden
         lines = markdown.strip().splitlines()
         result = []
-          # Verbesserte Regex-Patterns für deutsche und englische Grußformeln, inkl. Multi-Sprach-Kombinationen
+        # Verbesserte Regex-Patterns für deutsche und englische Grußformeln, inkl. Multi-Sprach-Kombinationen
         salute_re = re.compile(r'(?i)^(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße)(\s*/\s*(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße))?[,:\s]*$')
         name_re = re.compile(r'^[A-ZÄÖÜa-zäöüß][A-ZÄÖÜa-zäöüß\s\-\.]{1,30}$')
 
@@ -158,6 +167,11 @@ def html_to_markdown():
                 break
 
         final_markdown = "\n".join(result).strip()
+        # Entferne Markdown-hardbreaks ("  \n") und andere Spaces am Zeilenende
+        final_markdown = re.sub(r'[ \t]+\n', '\n', final_markdown)
+        # Nochmals: Mehr als 2 aufeinanderfolgende Leerzeilen auf maximal 2 reduzieren
+        final_markdown = re.sub(r'\n{3,}', '\n\n', final_markdown)
+        final_markdown = final_markdown.strip()
 
         return jsonify({
             'original_html': html_content,
