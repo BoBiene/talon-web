@@ -1,28 +1,49 @@
-FROM python:3.9-slim-buster
+FROM python:3.12-slim
 
+# Sicherheit: Non-root User
+RUN groupadd -r talon && useradd -r -g talon talon
+
+# System-Abhängigkeiten für lxml, numpy, etc.
 RUN apt-get update && \
-    apt-get install -y \
-    # build-essential \
-    # git curl python3-dev \
+    apt-get install -y --no-install-recommends \
     libatlas3-base \
-    # libatlas-base-dev liblapack-dev \
     libxml2 \
-    # libxml2-dev \
-    libffi6 
-    # libffi-dev musl-dev libxslt-dev
-
-# RUN apt-get -yqq update
-# RUN apt-get install -yqq python3
-# RUN apt-get -yqq install python3-pip
-
-COPY . /app
+    libxml2-dev \
+    libxslt1-dev \
+    libffi8 \
+    libffi-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 WORKDIR /app
-EXPOSE 5000
 
-RUN pip3 install -r requirements.txt
-RUN pip3 install .
+# Python-Path setzen, damit das Paket immer gefunden wird
+ENV PYTHONPATH=/app
 
-ENTRYPOINT [ "python3" ]
+# Nur relevante Dateien für den Build kopieren
+COPY requirements.txt setup.py MANIFEST.in README.md ./
 
-CMD [ "/app/talon/web/bootstrap.py" ]
+# Python-Abhängigkeiten installieren
+RUN pip3 install --upgrade pip --no-cache-dir && \
+    pip3 install --no-cache-dir -r requirements.txt && \
+    pip3 install --no-cache-dir . && \
+    apt-get remove -y build-essential libxml2-dev libxslt1-dev libffi-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Restlichen Code kopieren
+COPY . .
+
+# Ownership an non-root user übergeben
+RUN chown -R talon:talon /app
+
+USER talon
+
+EXPOSE 5505
+
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python3 -c "import requests; requests.get('http://localhost:5505/health', timeout=10)" || exit 1
+
+ENTRYPOINT ["python3"]
+CMD ["/app/talon/web/bootstrap.py"]

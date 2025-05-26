@@ -11,7 +11,7 @@ Talon can be used as a webservice. Can be invoked by using the script.
 
 ### Pre-Build Docker-Image
 ```
-docker run -p 5000:5000 ghcr.io/bobiene/talon-web:latest 
+docker run -p 5505:5505 ghcr.io/bobiene/talon-web:latest 
 ```
 
 ### From Source
@@ -30,10 +30,34 @@ Or via docker
 
 
 ## Endpoints
+- `/health` (Health check)
 - `/talon/signature`
 - `/talon/quotations/text`
 - `/talon/quotations/html`
+- `/talon/html-to-markdown`
+- `/talon/html-to-markdown-direct`
 
+
+### Endpoint `/health` ``GET``
+
+Health check endpoint for monitoring and load balancers.
+
+#### Response
+
+```json
+{
+    "status": "healthy",
+    "service": "talon-web-api", 
+    "version": "1.6.0",
+    "endpoints": [
+        "/talon/signature",
+        "/talon/quotations/text",
+        "/talon/quotations/html", 
+        "/talon/html-to-markdown",
+        "/talon/html-to-markdown-direct"
+    ]
+}
+```
 
 ### Endpoint `/talon/signature` ``POST``
 | Post-Parameter | provision | comment |
@@ -110,7 +134,7 @@ Sample
 For endpoint `/talon/signature`, invoked as a `get` or `post` request. Curl Sample:
 
 ```
-curl --location --request GET 'http://127.0.0.1:5000/talon/signature' \
+curl --location --request GET 'http://127.0.0.1:5505/talon/signature' \
 --form 'email_content="Hi,
 
 This is just a test.
@@ -146,3 +170,121 @@ The library is inspired by the following research papers and projects:
 
 -  http://www.cs.cmu.edu/~vitor/papers/sigFilePaper_finalversion.pdf
 -  http://www.cs.cornell.edu/people/tj/publications/joachims_01a.pdf
+
+## HTML to Markdown Endpoints
+
+### Endpoint `/talon/html-to-markdown` ``POST``
+
+Converts HTML to Markdown using Talon's intelligent signature and quotation detection combined with html2text.
+
+| Post-Parameter | provision | comment |
+| --- | --- | ---- |
+| html | *requiered* | HTML content to be converted |
+| sender | *optional* | sender's email address for enhanced signature detection |
+
+#### Request Format
+
+**JSON Input:**
+```json
+{
+    "html": "<html><body><h1>Title</h1><p>Content...</p><hr><p>Best regards...</p></body></html>",
+    "sender": "max@example.com"
+}
+```
+
+**Alternative Form-Data Input:**
+- `html_content`: HTML content
+- `email_sender`: sender email (optional)
+
+#### Response
+
+```json
+{
+    "original_html": "<<content-of-post-parameter html>>",
+    "markdown": "# Title\n\nContent...",
+    "removed_signature": "Best regards\nMax Mustermann",
+    "sender": "max@example.com",
+    "success": true
+}
+```
+
+### Endpoint `/talon/html-to-markdown-direct` ``POST``
+
+Direct HTML to Markdown conversion with basic signature pattern recognition, without Talon's quotation extraction.
+
+| Post-Parameter | provision | comment |
+| --- | --- | ---- |
+| html | *requiered* | HTML content to be converted |
+
+#### Request Format
+
+**JSON Input:**
+```json
+{
+    "html": "<html><body><h1>Title</h1><p>Content...</p><hr><p>Best regards...</p></body></html>"
+}
+```
+
+**Alternative Form-Data Input:**
+- `html_content`: HTML content
+
+#### Response
+
+```json
+{
+    "original_html": "<<content-of-post-parameter html>>",
+    "markdown": "# Title\n\nContent...",
+    "success": true
+}
+```
+
+### Curl Examples
+
+**With Talon's intelligent detection:**
+```bash
+curl -X POST 'http://127.0.0.1:5505/talon/html-to-markdown' \
+--header 'Content-Type: application/json' \
+--data '{
+    "html": "<h1>Test</h1><p>Important content</p><hr><p>Best regards<br>Max Mustermann</p>",
+    "sender": "max@example.com"
+}'
+```
+
+**Direct conversion:**
+```bash
+curl -X POST 'http://127.0.0.1:5505/talon/html-to-markdown-direct' \
+--header 'Content-Type: application/json' \
+--data '{
+    "html": "<h1>Test</h1><p>Important content</p><hr><p>Best regards<br>Max Mustermann</p>"
+}'
+```
+
+### Recognized Signature Patterns
+
+The HTML-to-Markdown endpoints recognize the following signature patterns:
+
+**German Patterns:**
+- "Mit freundlichen Grüßen"
+- "Freundliche Grüße"  
+- "Viele Grüße"
+
+**English Patterns:**
+- "Best regards"
+- "Kind regards"
+- "Sincerely"
+
+**Technical Patterns:**
+- `<hr>` tags (everything after the tag is removed)
+- `--` separators
+- CSS classes containing "signature"
+- Gmail/Outlook signature blocks
+
+### Features
+
+- **HTML-to-Markdown Conversion**: Uses html2text for clean Markdown output
+- **Intelligent Signature Removal**: Combines Talon's ML-based detection with pattern matching
+- **Flexible Input**: Supports both JSON and form-data inputs
+- **Multilingual Support**: Recognizes German and English signature patterns
+- **Two Conversion Modes**: 
+  - Intelligent with Talon's quotation extraction
+  - Direct with simple pattern recognition
