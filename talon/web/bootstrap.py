@@ -100,16 +100,13 @@ def html_to_markdown():
         soup = BeautifulSoup(html_content, "html.parser")
 
         # Entferne störende Tags
-        for tag in soup(["style", "script", "footer", "nav", "header"]):
+        for tag in soup(["style", "script", "header"]):
             tag.decompose()
-        
-        # Entferne Zitat-Blöcke und andere störende Elemente
-        for sel in ["blockquote", ".gmail_quote", ".gmail_extra", ".moz-cite-prefix", "table", "hr"]:
-            for el in soup.select(sel):
-                el.decompose()
-
         # Erst zu HTML-Text konvertieren
-        clean_html = str(soup)
+
+        sig_html = None
+        # Immer sender als String übergeben, nie None
+        clean_html, sig_html = signature.extract(str(soup), sender=sender or "")
 
         # 2. HTML zu Markdown konvertieren
         h = html2text.HTML2Text()
@@ -128,14 +125,17 @@ def html_to_markdown():
         # 3. Am Anfang/Ende trimmen
         markdown = markdown.strip()
 
-        # 3. Plain text für Talon extrahieren
-        plain_text = soup.get_text(separator="\n").strip()
-        
         # 4. Zitat entfernen via Talon
-        text = quotations.extract_from_plain(plain_text)
+        markdown = quotations.extract_from_plain(markdown)
         sig = None
-        if sender:
-            text, sig = signature.extract(text, sender=sender)
+        # Immer sender als String übergeben, nie None
+        markdown, sig = signature.extract(markdown, sender=sender or "")
+
+        # Entferne Markdown-hardbreaks ("  \n") und andere Spaces am Zeilenende
+        markdown = re.sub(r'[ \t]+\n', '\n', markdown)
+        # Nochmals: Mehr als 2 aufeinanderfolgende Leerzeilen auf maximal 2 reduzieren
+        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
+
         # 5. Grußformel + Name aus Markdown beibehalten, danach abschneiden
         lines = markdown.strip().splitlines()
         result = []
@@ -167,18 +167,28 @@ def html_to_markdown():
                 break
 
         final_markdown = "\n".join(result).strip()
-        # Entferne Markdown-hardbreaks ("  \n") und andere Spaces am Zeilenende
-        final_markdown = re.sub(r'[ \t]+\n', '\n', final_markdown)
-        # Nochmals: Mehr als 2 aufeinanderfolgende Leerzeilen auf maximal 2 reduzieren
-        final_markdown = re.sub(r'\n{3,}', '\n\n', final_markdown)
+      
         final_markdown = final_markdown.strip()
+
+        sig_markdown = None
+        # when singature is not removed by tolon, we used a regex to remove it and will return it
+        # so if final_markdown is not the same as markdown, we assume that talon did not remove the signature
+        # so we use the end of markdown which is not inside final_markdown as sig_markdown
+        if final_markdown != markdown:
+            sig_markdown = re.sub(rf'^{re.escape(final_markdown)}\s*', '', markdown, flags=re.MULTILINE).strip()
+            if not sig_markdown:
+                sig_markdown = None
+
+
 
         return jsonify({
             'original_html': html_content,
             'markdown': final_markdown,
-            'plain_text': text,
+            'intermediate_markdown': markdown,
             'email_sender': sender,
-            'removed_signature': str(sig) if sig else None
+            'removed_markdown_signature': str(sig_markdown) if sig_markdown else None,
+            'removed_html_signature': str(sig_html) if sig_html else None,
+            'removed_plain_signature': str(sig) if sig else None
         })
 
     except Exception as e:
