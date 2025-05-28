@@ -1,5 +1,4 @@
 from talon import signature, quotations
-from talon import signature, quotations
 from flask import Flask, request, jsonify, json
 from werkzeug.exceptions import HTTPException, BadRequest
 from bs4 import BeautifulSoup
@@ -22,6 +21,23 @@ talon.init()
 
 log = logging.getLogger(__name__)
 app = Flask(__name__)
+
+# Global OpenAI client cache to avoid recreating clients repeatedly
+_openai_clients = {}
+
+def get_openai_client(api_key):
+    """
+    Returns a cached OpenAI client for the given API key.
+    Creates a new client only if not already cached.
+    """
+    if api_key not in _openai_clients:
+        try:
+            _openai_clients[api_key] = openai.OpenAI(api_key=api_key)
+            log.debug(f"Created new OpenAI client (cache size: {len(_openai_clients)})")
+        except Exception as e:
+            log.error(f"Failed to create OpenAI client: {str(e)}")
+            return None
+    return _openai_clients[api_key]
 
 
 @app.errorhandler(HTTPException)
@@ -160,11 +176,10 @@ def html_to_markdown():
         else:
             # 7. Grußformel + Name aus Markdown beibehalten, danach abschneiden
             final_markdown = extract_content_until_salutation(markdown)
-        
-        # 8. AI-Bildverarbeitung - NUR wenn OpenAI Key vorhanden und NACH der Signaturentfernung
+          # 8. AI-Bildverarbeitung - NUR wenn OpenAI Key vorhanden und NACH der Signaturentfernung
         image_info = {}
         if openai_api_key and final_markdown:
-            image_info = process_images_from_markdown(
+            image_info = process_images_parallel_with_ai(
                 final_markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt, ai_model
             )
             
@@ -219,47 +234,41 @@ def html_to_markdown():
 
 def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str, ai_model="gpt-4.1-mini") -> str:
     """
-    Nutzt AI nur zur Erkennung der Zeilennummer (oder Position) der Grußformel,
-    schneidet dann den Markdown-Text bis dorthin zu, um Markdown intakt zu halten.
+    Nutzt AI, um
+    - die letzte Zeile der Grußformel im Markdown zu finden
+    - optional eine vereinfachte Signatur/Schlusszeile von der KI generieren zu lassen
+    Schneidet den Markdown-Text bis dorthin zu und hängt die ggf. neue Schlusszeile an.
+
+    Returns:
+        Gekürzter Markdown-Text mit neuer Schlusszeile (wenn von KI geliefert), 
+        sonst Originaltext bei Fehlern.
     """
-
-    try:
-        client = openai.OpenAI(api_key=openai_api_key)
-    except Exception as e:
-        log.error(f"Failed to initialize OpenAI client: {str(e)}")
-        return markdown  # Fallback auf Original-Markdown bei Fehler
-
+    client = get_openai_client(openai_api_key)
+    
+    # Prompt zur Zeilenerkennung und optionale vereinfachte Signatur
     prompt = (
-        "Analyze the following Markdown text and give me the line number of the last "
-        "line that belongs to the salutation and the sender's name. "
-        "Respond with only the number, without any further explanations.\n\n"
-        f"Markdown text:\n{markdown}"
+        "You receive a Markdown email text.\n"
+        "Your task is to remove the full original signature and replace it by a short, clean, professional signature line with name, position and one contact detail.\n"
+        "Output the entire cleaned Markdown text including greeting, body, and new simplified signature, preserving original formatting and line breaks where possible.\n"
+        "Do not add explanations, output only the cleaned Markdown.\n\n"
+        f"Email Markdown:\n{markdown}"
     )
 
     try:
         response = client.chat.completions.create(
             model=ai_model,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant for extracting email content."},
-                {"role": "user", "content": f"{prompt}\n\nMarkdown-Text:\n{markdown}"}
+                {"role": "system", "content": "You are an assistant specialized in email content processing."},
+                {"role": "user", "content": prompt}
             ],
-            max_tokens=1000,
+            max_tokens=1500,
             temperature=0.1
         )
-
-        line_number_str =  response.choices[0].message.content.strip()
-        line_number = int(re.findall(r'\d+', line_number_str)[0])
-        log.info(f"AI detected salutation ending at line: {line_number}")
-
-        # Markdown bis zur Zeile abschneiden (1-basiert)
-        markdown_lines = markdown.splitlines()
-        extracted = "\n".join(markdown_lines[:line_number])
-
-        return extracted
+        cleaned_markdown = response.choices[0].message.content.strip()
+        return cleaned_markdown
 
     except Exception as e:
-        log.error(f"Error during AI processing or parsing: {e}")
-        # Fallback: komplette Markdown zurückgeben
+        log.error(f"Error during AI processing: {e}")
         return markdown
 
 def extract_content_until_salutation(markdown):
@@ -300,252 +309,6 @@ def extract_content_until_salutation(markdown):
     return "\n".join(result).strip()
 
 
-def process_images_from_markdown(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model="gpt-4.1-mini"):
-    """
-    Elegante Lösung: Findet Bilder im finalen Markdown und verarbeitet sie mit AI.
-    
-    Args:
-        markdown: Das finale Markdown (ohne Signatur)
-        openai_api_key: OpenAI API Schlüssel
-        base_url: Basis-URL für relative Bildpfade
-        auth_query_params: Authentifizierungs-Query-Parameter für Bilder (optional)
-        image_path: Pfad-Präfix für lokale Bilder
-        image_prefix: Präfix für Dateinamen
-        ai_prompt: Benutzerdefinierter AI-Prompt
-        ai_model: AI-Modell (default: gpt-4.1-mini)
-    
-    Returns:
-        dict: Bildinformationen mit AI-Beschreibungen
-    """
-    import re
-    import tempfile
-    import os
-    import hashlib
-    import base64
-    import shutil
-    
-    # Finde alle Markdown-Bilder mit Regex: ![alt](src)
-    image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
-    image_matches = re.findall(image_pattern, markdown)
-    
-    if not image_matches:
-        return {}
-    
-    log.info(f"Found {len(image_matches)} images in markdown")
-    
-    # OpenAI Client initialisieren
-    try:
-        import openai
-        client = openai.OpenAI(api_key=openai_api_key)
-    except Exception as e:
-        log.error(f"Failed to initialize OpenAI client: {str(e)}")
-        return {}
-      # Temporäres Verzeichnis erstellen
-    temp_dir = tempfile.mkdtemp(prefix="talon_markdown_images_")
-    temp_files = []
-    images_to_process = []
-    
-    try:
-        # Sammle alle Bilder zum parallelen Download
-        download_tasks = []
-        for idx, (alt_text, src) in enumerate(image_matches, 1):
-            try:
-                # Absolute URL erstellen
-                if base_url and not src.startswith(('http://', 'https://', 'data:')):
-                    from urllib.parse import urljoin
-                    full_url = urljoin(base_url, src)
-
-                    if auth_query_params:
-                        parsed_url = urlparse(full_url)
-                        query = parsed_url.query
-                        if query:
-                            full_url += f"&{auth_query_params}"
-                        else:
-                            full_url += f"?{auth_query_params}"
-                else:
-                    full_url = src
-                    
-                # Skip data URLs (base64 embedded images)
-                if src.startswith('data:'):
-                    log.info(f"Skipping data URL image: {src[:50]}...")
-                    continue
-                    
-                # Temporären Bildnamen generieren
-                url_hash = hashlib.md5(full_url.encode()).hexdigest()[:8]
-                file_extension = get_file_extension_from_url(full_url)
-                filename = f"{image_prefix}{url_hash}{file_extension}" if image_prefix else f"image_{idx}_{url_hash}{file_extension}"
-                temp_path = os.path.join(temp_dir, filename)
-                local_path = os.path.join(image_path, filename).replace('\\', '/')
-                
-                # Sammle Download-Task
-                download_tasks.append({
-                    'url': full_url,
-                    'path': temp_path,
-                    'src': src,
-                    'alt_text': alt_text,
-                    'filename': filename,
-                    'local_path': local_path,
-                    'file_extension': file_extension
-                })
-                    
-            except Exception as e:
-                log.error(f"Error preparing image {src}: {str(e)}")
-        
-        # Paralleler Download aller Bilder
-        if download_tasks:
-            log.info(f"Starting parallel download of {len(download_tasks)} images...")
-            download_results = download_images_parallel(download_tasks, max_workers=4)
-            
-            # Verarbeite erfolgreiche Downloads
-            for result in download_results:
-                if result['success']:
-                    temp_files.append(result['path'])
-                    images_to_process.append({
-                        'src': result['src'],
-                        'alt_text': result['alt_text'],
-                        'full_url': result['url'],
-                        'filename': result['filename'],
-                        'temp_path': result['path'],
-                        'local_path': result['local_path'],
-                        'file_extension': result['file_extension']
-                    })
-        
-        # AI-Beschreibungen generieren
-        image_info = {}
-        if images_to_process:
-            ai_descriptions = generate_ai_descriptions_batch(
-                client, images_to_process, markdown, ai_prompt, ai_model
-            )
-            
-            # Ergebnisse kombinieren
-            for i, img_data in enumerate(images_to_process):
-                ai_desc = ai_descriptions.get(str(i), {})
-                
-                # Bild als Base64 kodieren
-                with open(img_data['temp_path'], 'rb') as img_file:
-                    base64_data = base64.b64encode(img_file.read()).decode('utf-8')
-                  # Informationen speichern
-                image_info[img_data['src']] = {
-                    'original_src': img_data['src'],
-                    'full_url': img_data['full_url'],
-                    'local_path': img_data['local_path'],
-                    'filename': img_data['filename'],
-                    'alt_text': ai_desc.get('alt_text', img_data['alt_text']),
-                    'ai_description': ai_desc.get('description', 'Bildbeschreibung konnte nicht generiert werden.'),
-                    'base64_data': base64_data,
-                    'content_type': get_content_type_from_extension(img_data['file_extension'])
-                }
-                
-    finally:
-        # Aufräumen
-        for temp_file in temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except Exception as e:
-                log.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
-        
-        try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-        except Exception as e:
-            log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
-            
-    return image_info
-
-
-def generate_ai_descriptions_batch(client, images_data, markdown_context, custom_prompt="", model="gpt-4.1-mini"):
-    """
-    Generiert AI-Beschreibungen für mehrere Bilder in einem Batch-Call.
-    """
-    if not images_data:
-        return {}
-    
-    # Default-Prompt falls keiner angegeben
-    if not custom_prompt:
-        custom_prompt = """You will receive email content in Markdown format and must generate accurate English descriptions for the identified images.
-
-For each image, provide:
-1. **Alt text**: A short, concise description (maximum 10 words)
-2. **Description**: A detailed description (1–2 sentences) emphasizing relevant details for the email context
-
-Reply in JSON format:
-{
-  "0": {"alt_text": "...", "description": "..."},
-  "1": {"alt_text": "...", "description": "..."}
-}
-"""
-    
-    # Erstelle Markdown-Kontext mit Bild-Markern
-    enhanced_context = markdown_context + "\n\n" if markdown_context else ""
-    
-    # Füge Bild-Marker hinzu
-    for i, img_data in enumerate(images_data):
-        enhanced_context += f"\n\n<<BILD {i}: {img_data['alt_text']} - DU SOLLST FÜR DIESES BILD EINE BESCHREIBUNG ERSTELLEN>>\n"
-    
-    try:
-        # Erstelle Content-Array mit Text und allen Bildern
-        content = [
-            {"type": "text", "text": f"{custom_prompt}\n\nE-Mail-Kontext:\n{enhanced_context}"}
-        ]
-        
-        # Füge alle Bilder hinzu
-        for i, img_data in enumerate(images_data):
-            with open(img_data['temp_path'], 'rb') as image_file:
-                image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            content_type = get_content_type_from_extension(img_data['file_extension'])
-            
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{content_type};base64,{image_data}",
-                    "detail": "low"  # Kosteneinsparung
-                }
-            })
-        
-        # API-Call
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
-            max_tokens=500 * len(images_data),  # Mehr Tokens für mehrere Bilder
-            response_format={"type": "json_object"}  # JSON-Response erzwingen
-        )
-        
-        # Parse JSON-Response
-        import json
-        result_text = response.choices[0].message.content.strip()
-        ai_results = json.loads(result_text)
-        
-        log.info(f"Generated AI descriptions for {len(images_data)} images")
-        return ai_results
-        
-    except Exception as e:
-        log.error(f"Error in batch AI description generation: {str(e)}")
-        
-        # Fallback: Einzelverarbeitung
-        results = {}
-        for i, img_data in enumerate(images_data):
-            try:
-                description = generate_ai_description_single(client, img_data['temp_path'], img_data['alt_text'], model)
-                results[str(i)] = {
-                    'alt_text': img_data['alt_text'] or f"Bild {i+1}",
-                    'description': description
-                }
-            except Exception as e2:
-                log.error(f"Error in fallback description for image {i}: {str(e2)}")
-                results[str(i)] = {
-                    'alt_text': img_data['alt_text'] or f"Bild {i+1}",
-                    'description': "Bildbeschreibung konnte nicht generiert werden."
-                }
-        
-        return results
-
 
 def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-mini"):
     """Fallback: Generiert eine AI-Beschreibung für ein einzelnes Bild."""
@@ -575,8 +338,7 @@ def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-
                         }
                     ]
                 }
-            ],
-            max_tokens=200
+            ],        max_tokens=200
         )
         
         return response.choices[0].message.content.strip()
@@ -598,6 +360,20 @@ def get_file_extension_from_url(url):
             
     # Default zu .jpg
     return '.jpg'
+
+
+def get_content_type_from_extension(file_extension):
+    """Ermittelt den Content-Type aus einer Dateierweiterung."""
+    extension_map = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.bmp': 'image/bmp',
+        '.svg': 'image/svg+xml'
+    }
+    return extension_map.get(file_extension.lower(), 'image/jpeg')
 
 
 def replace_images_with_ai_descriptions(markdown, image_info):
@@ -659,242 +435,6 @@ def get_reply_html():
     else:
         raise BadRequest("Required parameter 'email_content' is missing.")
     return jsonify(json_response)
-
-
-def process_images_for_ai_description(soup, openai_api_key, base_url, image_path, image_prefix, markdown_context="", ai_prompt="", ai_model="gpt-4.1-mini"):
-    """
-    Verarbeitet alle Bilder im HTML mit Batching für AI-Beschreibungen:
-    1. Lädt Bilder temporär herunter
-    2. Generiert AI-Beschreibungen mit OpenAI (Batching)
-    3. Kodiert Bilder als Base64 für Response
-    4. Löscht temporäre Dateien
-    
-    Args:
-        soup: BeautifulSoup object der bereinigten HTML
-        openai_api_key: OpenAI API Schlüssel
-        base_url: Basis-URL für relative Bildpfade
-        image_path: Pfad-Präfix für Bilder
-        image_prefix: Präfix für Dateinamen
-        markdown_context: Markdown-Kontext des E-Mail-Inhalts
-        ai_prompt: Benutzerdefinierter AI-Prompt (optional)
-        ai_model: AI-Modell (default: gpt-4.1-mini)
-    """
-    image_info = {}
-    temp_files = []
-    
-    # Erstelle temporäres Bildverzeichnis
-    temp_dir = tempfile.mkdtemp(prefix="talon_images_")
-    
-    # OpenAI Client initialisieren
-    try:
-        client = openai.OpenAI(api_key=openai_api_key)
-    except Exception as e:
-        log.error(f"Failed to initialize OpenAI client: {str(e)}")
-        return image_info
-      # Alle img-Tags finden
-    img_tags = soup.find_all('img')
-    
-    if not img_tags:
-        return image_info
-    
-    # Sammle alle Bilder zum parallelen Download
-    download_tasks = []
-    
-    try:
-        for idx, img_tag in enumerate(img_tags, 1):
-            try:
-                src = img_tag.get('src')
-                alt_text = img_tag.get('alt', '')
-                
-                if not src:
-                    continue
-                    
-                # Absolute URL erstellen
-                if base_url and not src.startswith(('http://', 'https://', 'data:')):
-                    full_url = urljoin(base_url, src)
-                else:
-                    full_url = src
-                    
-                # Skip data URLs (base64 embedded images) for now
-                if src.startswith('data:'):
-                    continue
-                    
-                # Temporären Bildnamen generieren
-                url_hash = hashlib.md5(full_url.encode()).hexdigest()[:8]
-                file_extension = get_file_extension_from_url(full_url)
-                filename = f"{image_prefix}{url_hash}{file_extension}" if image_prefix else f"image_{idx}_{url_hash}{file_extension}"
-                temp_path = os.path.join(temp_dir, filename)
-                local_path = os.path.join(image_path, filename).replace('\\', '/')
-                
-                # Sammle Download-Task
-                download_tasks.append({
-                    'url': full_url,
-                    'path': temp_path,
-                    'src': src,
-                    'alt_text': alt_text,
-                    'filename': filename,
-                    'local_path': local_path,
-                    'file_extension': file_extension
-                })
-                    
-            except Exception as e:
-                log.error(f"Error preparing image {src}: {str(e)}")
-        
-        # Paralleler Download aller Bilder
-        images_to_process = []
-        if download_tasks:
-            log.info(f"Starting parallel download of {len(download_tasks)} images...")
-            download_results = download_images_parallel(download_tasks, max_workers=4)
-            
-            # Verarbeite erfolgreiche Downloads
-            for result in download_results:
-                if result['success']:
-                    temp_files.append(result['path'])
-                    images_to_process.append({
-                        'src': result['src'],
-                        'alt_text': result['alt_text'],
-                        'full_url': result['url'],
-                        'filename': result['filename'],
-                        'temp_path': result['path'],
-                        'local_path': result['local_path'],
-                        'file_extension': result['file_extension']
-                    })
-        
-        # Batch-Verarbeitung für AI-Beschreibungen
-        if images_to_process:
-            ai_descriptions = generate_ai_descriptions_batch(
-                client, images_to_process, markdown_context, ai_prompt, ai_model
-            )
-            
-            # Kombiniere Ergebnisse
-            for i, img_data in enumerate(images_to_process):
-                ai_desc = ai_descriptions.get(str(i), {})
-                
-                # Bild als Base64 kodieren
-                with open(img_data['temp_path'], 'rb') as img_file:
-                    base64_data = base64.b64encode(img_file.read()).decode('utf-8')
-                  # Informationen speichern
-                image_info[img_data['src']] = {
-                    'original_src': img_data['src'],
-                    'full_url': img_data['full_url'],
-                    'local_path': img_data['local_path'],
-                    'filename': img_data['filename'],
-                    'alt_text': ai_desc.get('alt_text', img_data['alt_text']),
-                    'ai_description': ai_desc.get('description', 'Bildbeschreibung konnte nicht generiert werden.'),
-                    'base64_data': base64_data,
-                    'content_type': get_content_type_from_extension(img_data['file_extension'])
-                }
-                
-    finally:
-        # Temporäre Dateien löschen
-        for temp_file in temp_files:
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except Exception as e:
-                log.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
-        
-        # Temporäres Verzeichnis löschen
-        try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-        except Exception as e:
-            log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
-            
-    return image_info
-
-
-def generate_ai_descriptions_batch(client, images_data, markdown_context, custom_prompt="", model="gpt-4.1-mini"):
-    """
-    Generiert AI-Beschreibungen für mehrere Bilder in einem Batch-Call.
-    """
-    if not images_data:
-        return {}
-    
-    # Default-Prompt falls keiner angegeben
-    if not custom_prompt:
-        custom_prompt = """You will receive email content in Markdown format and must generate accurate German descriptions for the identified images.
-
-For each image, provide:
-1. **Alt text**: A short, concise description (maximum 10 words)
-2. **Description**: A detailed description (1–2 sentences) emphasizing relevant details for the email context
-
-Reply in JSON format:
-{
-  "0": {"alt_text": "...", "description": "..."},
-  "1": {"alt_text": "...", "description": "..."}
-}"""
-    
-    # Erstelle Markdown-Kontext mit Bild-Markern
-    enhanced_context = markdown_context + "\n\n" if markdown_context else ""
-    
-    # Füge Bild-Marker hinzu
-    for i, img_data in enumerate(images_data):
-        enhanced_context += f"\n\n<<BILD {i}: {img_data['alt_text']} - DU SOLLST FÜR DIESES BILD EINE BESCHREIBUNG ERSTELLEN>>\n"
-    
-    try:
-        # Erstelle Content-Array mit Text und allen Bildern
-        content = [
-            {"type": "text", "text": f"{custom_prompt}\n\nE-Mail-Kontext:\n{enhanced_context}"}
-        ]
-        
-        # Füge alle Bilder hinzu
-        for i, img_data in enumerate(images_data):
-            with open(img_data['temp_path'], 'rb') as image_file:
-                image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            content_type = get_content_type_from_extension(img_data['file_extension'])
-            
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{content_type};base64,{image_data}",
-                    "detail": "low"  # Kosteneinsparung
-                }
-            })
-        
-        # API-Call
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
-            max_tokens=500 * len(images_data),  # Mehr Tokens für mehrere Bilder
-            response_format={"type": "json_object"}  # JSON-Response erzwingen
-        )
-        
-        # Parse JSON-Response
-        import json
-        result_text = response.choices[0].message.content.strip()
-        ai_results = json.loads(result_text)
-        
-        log.info(f"Generated AI descriptions for {len(images_data)} images")
-        return ai_results
-        
-    except Exception as e:
-        log.error(f"Error in batch AI description generation: {str(e)}")
-        
-        # Fallback: Einzelverarbeitung
-        results = {}
-        for i, img_data in enumerate(images_data):
-            try:
-                description = generate_ai_description_single(client, img_data['temp_path'], img_data['alt_text'], model)
-                results[str(i)] = {
-                    'alt_text': img_data['alt_text'] or f"Bild {i+1}",
-                    'description': description
-                }
-            except Exception as e2:
-                log.error(f"Error in fallback description for image {i}: {str(e2)}")
-                results[str(i)] = {
-                    'alt_text': img_data['alt_text'] or f"Bild {i+1}",
-                    'description': "Bildbeschreibung konnte nicht generiert werden."
-                }
-        
-        return results
-
 
 def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-mini"):
     """Fallback: Generiert eine AI-Beschreibung für ein einzelnes Bild."""
@@ -1026,72 +566,313 @@ def download_images_parallel(images_data, max_workers=4):
     return results
 
 
-def get_file_extension_from_url(url):
-    """Ermittelt die Dateierweiterung aus einer URL."""
-    parsed = urlparse(url)
-    path = parsed.path.lower()
+def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai_prompt, ai_model):
+    """
+    Processes a single image: downloads it and generates AI description.
+    This function is designed to be run in parallel for multiple images.
     
-    # Bekannte Bildformate
-    for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']:
-        if ext in path:
-            return ext
-            
-    # Default zu .jpg
-    return '.jpg'
-
-
-def replace_images_with_ai_descriptions(markdown, image_info):
-    """Ersetzt Bilder in Markdown mit erweiterten Beschreibungen."""
+    Args:
+        task_data: Dictionary with image task information
+        openai_api_key: OpenAI API key
+        markdown_context: The markdown context for AI description
+        ai_prompt: Custom AI prompt
+        ai_model: AI model to use
     
-    # Finde alle Markdown-Bilder ![alt](src)
-    image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+    Returns:
+        Dictionary with processed image information or None if failed    """
+    temp_file = None
+    client = None
     
-    def replace_image(match):
-        alt_text = match.group(1)
-        src = match.group(2)
+    try:
+        # Initialize OpenAI client
+        client = get_openai_client(openai_api_key)
+        if not client:
+            log.error("Failed to get OpenAI client")
+            return None
         
-        # Prüfe ob wir Informationen für dieses Bild haben
-        if src in image_info:
-            info = image_info[src]
+        # Download the image
+        success = download_image(task_data['url'], task_data['path'])
+        if not success:
+            log.error(f"Failed to download image: {task_data['url']}")
+            return None
             
-            # Verwende Alt-Text oder generiere einen aus der AI-Beschreibung
-            if not alt_text.strip():
-                # Nehme die ersten Worte der AI-Beschreibung als Alt-Text
-                ai_words = info['ai_description'].split()[:6]
-                alt_text = ' '.join(ai_words)
-                if len(info['ai_description'].split()) > 6:
-                    alt_text += '...'
+        temp_file = task_data['path']
+        
+        # Generate AI description using the marker approach
+        ai_description = generate_ai_description_with_marker(
+            client, task_data['path'], task_data['alt_text'], 
+            markdown_context, ai_prompt, ai_model
+        )
+        
+        # Encode image as base64
+        with open(task_data['path'], 'rb') as img_file:
+            base64_data = base64.b64encode(img_file.read()).decode('utf-8')
             
-            # Erstelle erweiterte Markdown-Syntax
-            enhanced_markdown = f"""![{alt_text}]({info['local_path']})
+        # Return complete image information
+        return {
+            'src': task_data['src'],
+            'original_src': task_data['src'],
+            'full_url': task_data['url'],
+            'local_path': task_data['local_path'],
+            'filename': task_data['filename'],
+            'alt_text': task_data['alt_text'],
+            'ai_description': ai_description,
+            'base64_data': base64_data,
+            'content_type': get_content_type_from_extension(task_data['file_extension']),
+            'success': True
+        }
+        
+    except Exception as e:
+        log.error(f"Error processing image {task_data.get('src', 'unknown')}: {str(e)}")
+        return None
+        
+    finally:
+        # Clean up temporary file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception as e:
+                log.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
 
-> **Bildbeschreibung (KI):**
-> {info['ai_description']}"""
-            
-            return enhanced_markdown
-        else:
-            # Fallback: Originales Markdown-Bild
-            return match.group(0)
+
+def generate_ai_description_with_marker(client, image_path, alt_text, markdown_context, custom_prompt="", model="gpt-4.1-mini"):
+    """
+    Generates AI description for a single image using the ![CURRENT_IMAGE]() marker approach.
     
-    # Ersetze alle Bilder
-    enhanced_markdown = re.sub(image_pattern, replace_image, markdown)
+    Args:
+        client: OpenAI client instance
+        image_path: Path to the downloaded image
+        alt_text: Original alt text from the image
+        markdown_context: The markdown context where ![CURRENT_IMAGE]() represents this image
+        custom_prompt: Custom AI prompt (optional)
+        model: AI model to use
     
-    return enhanced_markdown
+    Returns:
+        String with AI-generated description
+    """
+    try:
+        # Use custom prompt or default
+        if not custom_prompt.strip():
+            custom_prompt = """You will receive email content in Markdown format where ![CURRENT_IMAGE]() represents the image you need to describe.
+
+Generate an accurate, concise description for this image considering its context in the email.
+
+Provide a detailed description (1-2 sentences) emphasizing relevant details for the email context.
+
+Reply with just the description text, no additional formatting."""
+
+        # Create the context with the marker
+        enhanced_context = markdown_context.replace('![CURRENT_IMAGE]()', f'![CURRENT_IMAGE]() - THIS IS THE IMAGE YOU SHOULD DESCRIBE')
+        
+        # Read and encode the image
+        with open(image_path, 'rb') as image_file:
+            image_data = base64.b64encode(image_file.read()).decode('utf-8')
+            
+        content_type = get_content_type_from_extension(os.path.splitext(image_path)[1])
+        
+        # Create the prompt with context
+        full_prompt = f"""{custom_prompt}
+
+Email context:
+{enhanced_context}
+
+Original alt text (if available): "{alt_text}"
+
+Please provide a description for the image marked as ![CURRENT_IMAGE]()."""
+
+        # Make API call
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": full_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{content_type};base64,{image_data}",
+                                "detail": "low"  # Cost optimization
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=300,
+            temperature=0.1
+        )
+        
+        description = response.choices[0].message.content.strip()
+        log.debug(f"Generated AI description: {description[:100]}...")
+        return description
+        
+    except Exception as e:
+        log.error(f"Error generating AI description with marker: {str(e)}")
+        return "AI description could not be generated."
 
 
-def get_content_type_from_extension(extension):
-    """Ermittelt den Content-Type basierend auf der Dateierweiterung."""
-    content_types = {
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.bmp': 'image/bmp',
-        '.svg': 'image/svg+xml'
-    }
-    return content_types.get(extension.lower(), 'image/jpeg')
+def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model="gpt-4.1-mini", max_workers=4):
+    """
+    Processes all images from markdown in parallel - each image is downloaded and AI-described individually.
+    Uses the ![CURRENT_IMAGE]() marker approach for contextual AI descriptions.
+    
+    Args:
+        markdown: The final markdown content (without signature)
+        openai_api_key: OpenAI API key
+        base_url: Base URL for relative image paths
+        auth_query_params: Authentication query parameters for images (optional)
+        image_path: Path prefix for local images
+        image_prefix: Prefix for filenames
+        ai_prompt: Custom AI prompt
+        ai_model: AI model (default: gpt-4.1-mini)
+        max_workers: Maximum number of parallel workers (default: 4)
+    
+    Returns:
+        dict: Image information with AI descriptions
+    """
+    # Find all markdown images with regex: ![alt](src)
+    image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+    image_matches = re.findall(image_pattern, markdown)
+    
+    if not image_matches:
+        return {}
+    
+    log.info(f"Found {len(image_matches)} images for parallel processing")
+    
+    # Create temporary directory for downloads
+    temp_dir = tempfile.mkdtemp(prefix="talon_parallel_images_")
+    
+    try:
+        # Prepare tasks for parallel processing
+        tasks = []
+        for idx, (alt_text, src) in enumerate(image_matches, 1):
+            try:
+                # Create absolute URL
+                if base_url and not src.startswith(('http://', 'https://', 'data:')):
+                    full_url = urljoin(base_url, src)
+                    if auth_query_params:
+                        parsed_url = urlparse(full_url)
+                        query = parsed_url.query
+                        if query:
+                            full_url += f"&{auth_query_params}"
+                        else:
+                            full_url += f"?{auth_query_params}"
+                else:
+                    full_url = src
+                    
+                # Skip data URLs (base64 embedded images)
+                if src.startswith('data:'):
+                    log.info(f"Skipping data URL image: {src[:50]}...")
+                    continue
+                    
+                # Generiere temporären Bildnamen
+                url_hash = hashlib.md5(full_url.encode()).hexdigest()[:8]
+                file_extension = get_file_extension_from_url(full_url)
+                filename = f"{image_prefix}{url_hash}{file_extension}" if image_prefix else f"image_{idx}_{url_hash}{file_extension}"
+                temp_path = os.path.join(temp_dir, filename)
+                local_path = os.path.join(image_path, filename).replace('\\', '/')
+                
+                # Erstelle Kontext mit ![CURRENT_IMAGE]() Marker für dieses spezielle Bild
+                image_context = markdown.replace(f'![{alt_text}]({src})', '![CURRENT_IMAGE]()', 1)
+                
+                # Erstelle Task-Daten
+                task_data = {
+                    'url': full_url,
+                    'path': temp_path,
+                    'src': src,
+                    'alt_text': alt_text,
+                    'filename': filename,
+                    'local_path': local_path,
+                    'file_extension': file_extension,
+                    'image_context': image_context
+                }
+                
+                tasks.append(task_data)
+                    
+            except Exception as e:
+                log.error(f"Error preparing parallel task for image {src}: {str(e)}")
+        
+        # Verarbeite alle Bilder parallel
+        image_info = {}
+        if tasks:
+            log.info(f"Starting parallel processing of {len(tasks)} images with {max_workers} workers...")
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Alle Tasks einreichen
+                future_to_task = {
+                    executor.submit(
+                        process_single_image_with_ai, 
+                        task, 
+                        openai_api_key, 
+                        task['image_context'], 
+                        ai_prompt, 
+                        ai_model
+                    ): task for task in tasks
+                }
+                  # Ergebnisse sammeln, sobald sie abgeschlossen sind
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+                    try:
+                        result = future.result()
+                        if result and result.get('success'):
+                            image_info[result['src']] = result
+                            log.info(f"Successfully processed image: {result['filename']}")
+                        else:
+                            log.warning(f"Failed to process image: {task['src']}")
+                    except Exception as e:
+                        log.error(f"Error in parallel task for {task['src']}: {str(e)}")
+            
+            log.info(f"Parallel processing completed: {len(image_info)}/{len(tasks)} images successful")
+            
+    finally:
+        # Temporäres Verzeichnis aufräumen
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+        except Exception as e:
+            log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
+            
+    return image_info
+
+def process_images_from_markdown(markdown, openai_api_key, base_url=None, auth_query_params=None, image_path="./images/", image_prefix="", ai_prompt="", ai_model="gpt-4.1-mini"):
+    """
+    Main wrapper function that calls the new parallel processing implementation.
+    This maintains compatibility with existing code while using the new parallel approach.
+    """
+    return process_images_parallel_with_ai(
+        markdown=markdown,
+        openai_api_key=openai_api_key,
+        base_url=base_url,
+        auth_query_params=auth_query_params,
+        image_path=image_path,
+        image_prefix=image_prefix,
+        ai_prompt=ai_prompt,
+        ai_model=ai_model,
+        max_workers=4  # Default parallel workers
+    )
 
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5505)
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Talon Web Bootstrap Server')
+    parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
+    parser.add_argument('--port', type=int, default=5505, help='Port to bind to')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    
+    args = parser.parse_args()
+    
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    log.info(f"Starting Talon Web Bootstrap Server on {args.host}:{args.port}")
+    log.info(f"Debug mode: {args.debug}")
+    
+    app.run(
+        host=args.host,
+        port=args.port,
+        debug=args.debug,
+        use_reloader=False  # Disable reloader to avoid duplicate initialization
+    )
