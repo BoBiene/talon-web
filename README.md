@@ -285,6 +285,73 @@ The HTML-to-Markdown endpoints recognize the following signature patterns:
 - **Intelligent Signature Removal**: Combines Talon's ML-based detection with pattern matching
 - **Flexible Input**: Supports both JSON and form-data inputs
 - **Multilingual Support**: Recognizes German and English signature patterns
+- **AI-Powered Image Processing**: Download and describe images using OpenAI Vision API
 - **Two Conversion Modes**: 
   - Intelligent with Talon's quotation extraction
   - Direct with simple pattern recognition
+
+### AI Image Processing
+
+The `/talon/html-to-markdown` endpoint supports automatic image processing with AI-generated descriptions:
+
+#### Optional Parameters for AI Features
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `openai_api_key` | string | OpenAI API Key for image descriptions | `null` (disabled) |
+| `base_url` | string | Base URL for resolving relative image URLs | `null` |
+| `image_path` | string | Local directory for downloaded images | `"./images/"` |
+| `image_prefix` | string | Prefix for downloaded image filenames | `""` |
+
+#### How It Works
+
+1. **Image Detection**: Finds all `<img>` tags in HTML
+2. **URL Resolution**: Converts relative URLs to absolute using `base_url`
+3. **Image Download**: Downloads images to local `image_path`
+4. **AI Description**: Uses OpenAI Vision API to generate German descriptions
+5. **Markdown Enhancement**: Replaces images with enhanced format
+
+#### Enhanced Markdown Format
+
+Images are converted to this enhanced format:
+
+```markdown
+![VW ID.7 Tourer im Schnee](./images/vw-id7.jpg)
+
+> **Bildbeschreibung (KI):**
+> Ein roter VW ID.7 Tourer steht im Schnee vor einem Einfamilienhaus. Im Hintergrund sind verschneite Bäume und ein bewölkter Himmel zu sehen.
+```
+
+#### Example Request with AI Processing
+
+```bash
+curl -X POST 'http://127.0.0.1:5505/talon/html-to-markdown' \
+--header 'Content-Type: application/json' \
+--data '{
+    "html": "<h1>Newsletter</h1><p>Unser neues Auto:</p><img src=\"car.jpg\" alt=\"Neues Fahrzeug\" />",
+    "sender": "marketing@auto.de",
+    "openai_api_key": "sk-...",
+    "base_url": "https://company.com/newsletter/",
+    "image_path": "./downloads/newsletter/",
+    "image_prefix": "auto-2024-"
+}'
+```
+
+#### Example Response with AI Processing
+
+```json
+{
+    "markdown": "# Newsletter\n\nUnser neues Auto:\n\n![Neues Fahrzeug](./downloads/newsletter/auto-2024-abc123.jpg)\n\n> **Bildbeschreibung (KI):**\n> Ein silberner SUV steht in einer modernen Ausstellungshalle mit Glasfront und Beleuchtung.",
+    "processed_images": ["car.jpg"],
+    "downloaded_images": ["./downloads/newsletter/auto-2024-abc123.jpg"],
+    "original_html": "...",
+    "email_sender": "marketing@auto.de"
+}
+```
+
+#### Cost Optimization
+
+- Uses `gpt-4.1-mini` model for cost efficiency
+- Images processed at low detail level
+- Only processes images when `openai_api_key` is provided
+- Skips data URLs (base64 embedded images)
