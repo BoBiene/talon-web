@@ -2,7 +2,7 @@ from talon import signature, quotations
 from flask import Flask, request, jsonify, json
 from werkzeug.exceptions import HTTPException, BadRequest
 from bs4 import BeautifulSoup, Tag
-import html2text
+from markdownify import markdownify as md, BACKSLASH, ATX
 import re
 import talon
 import logging
@@ -16,7 +16,6 @@ import tempfile
 import base64
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import datetime
 import warnings
 import time
 import sys
@@ -295,37 +294,21 @@ def html_to_markdown():
         # 2. Signatur aus HTML entfernen
         sig_html = None
         clean_html, sig_html = signature.extract(str(soup), sender=sender or "")
-        timings['signature_extraction_html'] = time.perf_counter() - t1
-        t2 = time.perf_counter()
 
-        # 3. HTML zu Markdown konvertieren
-        h = html2text.HTML2Text()
-        h.ignore_links = False
-        h.ignore_images = False
-        h.ignore_emphasis = False
-        h.body_width = 0
-        h.unicode_snob = True
-        markdown = h.handle(clean_html)
+        timings['signature_extraction_html'] = time.perf_counter() - t1
+        t2 = time.perf_counter()        # 3. HTML zu Markdown konvertieren
+        markdown = md(
+            clean_html,
+            heading_style=ATX
+        )
         timings['html_to_markdown'] = time.perf_counter() - t2
         t3 = time.perf_counter()
-
-        # 4. Markdown-Postprocessing: Whitespace-Optimierung
-        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
-        markdown = '\n'.join([l.rstrip() for l in markdown.splitlines()])
-        markdown = markdown.strip()
-        
 
         # 5. Zitat entfernen via Talon
         markdown = quotations.extract_from_plain(markdown)
         sig = None
         markdown, sig = signature.extract(markdown, sender=sender or "")
         timings['quotation_and_signature_extraction'] = time.perf_counter() - t3
-        t5 = time.perf_counter()
-
-        # 6. Markdown-hardbreaks entfernen
-        markdown = re.sub(r'[ \t]+\n', '\n', markdown)
-        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
-        timings['hardbreak_cleanup'] = time.perf_counter() - t5
         t6 = time.perf_counter()
 
         if openai_api_key and ai_signature_extraction:
