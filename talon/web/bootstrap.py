@@ -20,6 +20,7 @@ import datetime
 import warnings
 import time
 import sys
+import json
 
 # Suppress sklearn version warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -258,6 +259,19 @@ def html_to_markdown():
         
     if not html_content:
         raise BadRequest("Required parameter 'html' is missing.")
+    
+    auth_config = [];
+    if isinstance(auth_query_params, str):
+        # Prüfe ob es JSON ist
+        try:
+            auth_config = json.loads(auth_query_params)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback: Verwende den String als globale Auth-Parameter
+            log.warning("auth_query_params is not valid JSON, using as global parameter")
+    elif isinstance(auth_query_params, dict):
+        auth_config = auth_query_params
+    elif auth_query_params is not None:
+        log.warning("auth_query_params is not a valid type, expected dict or JSON string")
 
     try:
         # Zeitmessung für die einzelnen Schritte
@@ -299,13 +313,13 @@ def html_to_markdown():
         markdown = re.sub(r'\n{3,}', '\n\n', markdown)
         markdown = '\n'.join([l.rstrip() for l in markdown.splitlines()])
         markdown = markdown.strip()
-        t4 = time.perf_counter()
+        
 
         # 5. Zitat entfernen via Talon
         markdown = quotations.extract_from_plain(markdown)
         sig = None
         markdown, sig = signature.extract(markdown, sender=sender or "")
-        timings['quotation_and_signature_extraction'] = time.perf_counter() - t4
+        timings['quotation_and_signature_extraction'] = time.perf_counter() - t3
         t5 = time.perf_counter()
 
         # 6. Markdown-hardbreaks entfernen
@@ -330,7 +344,7 @@ def html_to_markdown():
         image_info = {}
         if openai_api_key and final_markdown:
             image_info = process_images_parallel_with_ai(
-                final_markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt, ai_model
+                final_markdown, openai_api_key, base_url, auth_config, image_path, image_prefix, ai_prompt, ai_model
             )
             timings['ai_image_processing'] = time.perf_counter() - t7
             t8 = time.perf_counter()
@@ -808,7 +822,8 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         markdown: The final markdown content (without signature)
         openai_api_key: OpenAI API key
         base_url: Base URL for relative image paths
-        auth_query_params: Authentication query parameters for images (optional)
+        auth_query_params: Domain-specific authentication parameters. Can be:
+                            '{"my.service-api.net": "token=abc123", "other.com": "key=xyz"}'
         image_path: Path prefix for local images
         image_prefix: Prefix for filenames
         ai_prompt: Custom AI prompt
@@ -833,20 +848,24 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
     try:
         # Prepare tasks for parallel processing
         tasks = []
-        for idx, (alt_text, src) in enumerate(image_matches, 1):
+        for idx, (alt_text, src) in enumerate(image_matches, 1):            
             try:
                 # Create absolute URL
                 if base_url and not src.startswith(('http://', 'https://', 'data:')):
                     full_url = urljoin(base_url, src)
-                    if auth_query_params:
+                else:
+                    full_url = src
+                
+                # Apply domain-specific auth parameters for ALL URLs (not just relative ones)
+                if auth_query_params and not src.startswith('data:'):
+                    domain_auth_params = get_auth_params_for_domain(auth_query_params, full_url)
+                    if domain_auth_params:
                         parsed_url = urlparse(full_url)
                         query = parsed_url.query
                         if query:
-                            full_url += f"&{auth_query_params}"
+                            full_url += f"&{domain_auth_params}"
                         else:
-                            full_url += f"?{auth_query_params}"
-                else:
-                    full_url = src
+                            full_url += f"?{domain_auth_params}"
                     
                 # Skip data URLs (base64 embedded images)
                 if src.startswith('data:'):
@@ -923,6 +942,62 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         except Exception as e:
             log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
             
+def get_auth_params_for_domain(auth_config, url):
+    """
+    Ermittelt die passenden Auth-Parameter für eine URL basierend auf ihrer Domain.
+    
+    Args:
+        auth_config: String (backward compatibility) oder Dict mit Domain-Auth-Mapping
+        url: Die URL für die Auth-Parameter gesucht werden
+    
+    Returns:
+        String mit Auth-Parametern oder leerer String
+    
+    Expected auth_config format (JSON):
+    {
+        "my.service-api.net": "token=abc123&user=john",
+        "other-domain.com": "apikey=xyz789",
+        "default": "common_param=value"  # optional fallback
+    }
+    """
+    if not auth_config:
+        return ""
+    
+    # Backward compatibility: Wenn auth_config ein String ist
+    if isinstance(auth_config, dict):
+        auth_dict = auth_config
+    else:
+        log.warning(f"Invalid auth_config type: {type(auth_config)}")
+        return ""
+    
+    # Extrahiere Domain aus URL
+    try:
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.lower()
+        
+        # Suche exakte Domain-Übereinstimmung
+        if domain in auth_dict:
+            log.debug(f"Found auth params for domain {domain}")
+            return auth_dict[domain]
+        
+        # Suche nach Subdomain-Übereinstimmung (z.B. api.domain.com -> domain.com)
+        for auth_domain in auth_dict.keys():
+            if auth_domain != "default" and domain.endswith('.' + auth_domain):
+                log.debug(f"Found auth params for parent domain {auth_domain} (url domain: {domain})")
+                return auth_dict[auth_domain]
+        
+        # Fallback auf default
+        if "default" in auth_dict:
+            log.debug(f"Using default auth params for domain {domain}")
+            return auth_dict["default"]
+            
+        log.debug(f"No auth params found for domain {domain}")
+        return ""
+        
+    except Exception as e:
+        log.error(f"Error parsing URL {url} for auth params: {str(e)}")
+        return ""
+
 if __name__ == "__main__":
     import argparse
     
