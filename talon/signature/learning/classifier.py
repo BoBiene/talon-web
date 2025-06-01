@@ -7,6 +7,7 @@ body belongs to the signature.
 
 from __future__ import absolute_import
 
+import warnings
 from numpy import genfromtxt
 from sklearn.svm import LinearSVC
 import joblib
@@ -31,7 +32,11 @@ def train(classifier, train_data_filename, save_classifier_filename=None):
 def load(saved_classifier_filename, train_data_filename):
     """Loads saved classifier. """
     try:
-        return joblib.load(saved_classifier_filename)
+        # Suppress sklearn version warnings when loading pre-trained models
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, 
+                                  message=".*was trained with scikit-learn.*")
+            return joblib.load(saved_classifier_filename)
     except Exception:
         import sys
         if sys.version_info > (3, 0):
@@ -63,7 +68,12 @@ def load_compat(saved_classifier_filename):
         saved_classifier_filename = tmp
 
     # important, use joblib.load before switching back to original cwd
-    jb_classifier = joblib.load(saved_classifier_filename)
+    # Suppress sklearn version warnings when loading pre-trained models
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UserWarning, 
+                              message=".*was trained with scikit-learn.*")
+        jb_classifier = joblib.load(saved_classifier_filename)
+    
     os.chdir(cwd)
 
     return jb_classifier

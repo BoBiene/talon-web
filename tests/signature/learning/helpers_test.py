@@ -137,17 +137,17 @@ def test_extract_names():
         '"**Bobby B**" <copymycashsystem@example.com>':
         ['Bobby', 'copymycashsystem'],
         # from crash reports `bad escape`
-        '"M Ali B Azlan \(GHSE/PETH\)" <aliazlan@example.com>':
+        r'"M Ali B Azlan \(GHSE/PETH\)" <aliazlan@example.com>':
         ['Ali', 'Azlan'],
-        ('"Ridthauddin B A Rahim \(DD/PCSB\)"'
+        (r'"Ridthauddin B A Rahim \(DD/PCSB\)"'
          ' <ridthauddin_arahim@example.com>'): ['Ridthauddin', 'Rahim'],
-        ('"Boland, Patrick \(Global Xxx Group, Ireland \)"'
+        (r'"Boland, Patrick \(Global Xxx Group, Ireland \)"'
          ' <Patrick.Boland@example.com>'): ['Boland', 'Patrick'],
-        '"Mates Rate \(Wine\)" <amen@example.com.com>':
+        r'"Mates Rate \(Wine\)" <amen@example.com.com>':
         ['Mates', 'Rate', 'Wine'],
-        ('"Morgan, Paul \(Business Xxx RI, Xxx Xxx Group\)"'
+        (r'"Morgan, Paul \(Business Xxx RI, Xxx Xxx Group\)"'
          ' <paul.morgan@example.com>'): ['Morgan', 'Paul'],
-        '"David DECOSTER \(Domicile\)" <decosterdavid@xxx.be>':
+        r'"David DECOSTER \(Domicile\)" <decosterdavid@xxx.be>':
         ['David', 'DECOSTER', 'Domicile']
         }
 
