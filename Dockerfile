@@ -82,5 +82,5 @@ EXPOSE 5505
 HEALTHCHECK --interval=30s --timeout=30s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5505/health || exit 1
 
-ENTRYPOINT ["python3"]
-CMD ["/app/talon/web/bootstrap.py"]
+ENTRYPOINT ["/opt/venv/bin/gunicorn"]
+CMD ["-w", "4", "-b", "0.0.0.0:5505", "talon.web.bootstrap:app"]

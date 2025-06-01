@@ -16,14 +16,77 @@ import tempfile
 import base64
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import datetime
+import warnings
+import time
+import sys
+
+# Suppress sklearn version warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+
+DEFAULT_AI_MODEL = "gpt-4.1-mini"
 
 talon.init()
 
 log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
+if not log.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    log.addHandler(handler)
+
 app = Flask(__name__)
+
+# Configure logging to suppress health check requests
+class HealthCheckFilter(logging.Filter):
+    """Filter to suppress health check log entries."""
+    def filter(self, record):
+        return '/health' not in record.getMessage()
+
+# Apply filter to werkzeug logger to suppress health check logs
+werkzeug_logger = logging.getLogger('werkzeug')
+werkzeug_logger.addFilter(HealthCheckFilter())
 
 # Global OpenAI client cache to avoid recreating clients repeatedly
 _openai_clients = {}
+
+def sanitize_url_for_logging(url):
+    """
+    Sanitizes URLs for logging by removing sensitive parameters like access_token.
+    """
+    if not url:
+        return url
+    
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        
+        # Remove sensitive parameters
+        sensitive_params = ['access_token', 'token', 'api_key', 'secret', 'password', 'auth']
+        for param in sensitive_params:
+            if param in query_params:
+                query_params[param] = ['***REDACTED***']
+        
+        # Reconstruct URL with sanitized query
+        sanitized_query = urlencode(query_params, doseq=True)
+        sanitized_url = urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            sanitized_query,
+            parsed.fragment
+        ))
+        
+        return sanitized_url
+    except Exception:
+        # Fallback: simple regex replacement for common patterns
+        import re
+        sanitized = re.sub(r'([?&])(access_token|token|api_key|secret|password|auth)=([^&]*)', r'\1\2=***REDACTED***', url)
+        return sanitized
 
 def get_openai_client(api_key):
     """
@@ -175,7 +238,8 @@ def html_to_markdown():
         base_url = data.get('base_url')
         auth_query_params = data.get('auth_query_params', '')
         image_path = data.get('image_path', './images/')
-        image_prefix = data.get('image_prefix', '')
+        image_prefix = data.get('image_prefix', None)
+        ai_model = data.get('ai_model', DEFAULT_AI_MODEL)
         ai_prompt = data.get('ai_prompt', '')
         ai_model = data.get('ai_model', 'gpt-4.1-mini')
         ai_signature_extraction = data.get('ai_signature_extraction', False)
@@ -186,7 +250,8 @@ def html_to_markdown():
         base_url = request.form.get('base_url')
         auth_query_params = request.form.get('auth_query_params', '')
         image_path = request.form.get('image_path', './images/')
-        image_prefix = request.form.get('image_prefix', '')
+        image_prefix = request.form.get('image_prefix', None)
+        ai_model = request.form.get('ai_model', DEFAULT_AI_MODEL)
         ai_prompt = request.form.get('ai_prompt', '')
         ai_model = request.form.get('ai_model', 'gpt-4.1-mini')
         ai_signature_extraction = request.form.get('ai_signature_extraction', 'false').lower() == 'true'
@@ -195,15 +260,23 @@ def html_to_markdown():
         raise BadRequest("Required parameter 'html' is missing.")
 
     try:
+        # Zeitmessung für die einzelnen Schritte
+        timings = {}
+        t0 = time.perf_counter()
+
         # 1. Vorverarbeitung: HTML bereinigen
         soup = BeautifulSoup(html_content, "html.parser")
         # Entferne störende Tags
         for tag in soup(["style", "script", "header"]):
             tag.decompose()
-        
+        timings['html_cleanup'] = time.perf_counter() - t0
+        t1 = time.perf_counter()
+
         # 2. Signatur aus HTML entfernen
         sig_html = None
         clean_html, sig_html = signature.extract(str(soup), sender=sender or "")
+        timings['signature_extraction_html'] = time.perf_counter() - t1
+        t2 = time.perf_counter()
 
         # 3. HTML zu Markdown konvertieren
         h = html2text.HTML2Text()
@@ -213,38 +286,56 @@ def html_to_markdown():
         h.body_width = 0
         h.unicode_snob = True
         markdown = h.handle(clean_html)
+        timings['html_to_markdown'] = time.perf_counter() - t2
+        t3 = time.perf_counter()
 
         # 4. Markdown-Postprocessing: Whitespace-Optimierung
         markdown = re.sub(r'\n{3,}', '\n\n', markdown)
         markdown = '\n'.join([l.rstrip() for l in markdown.splitlines()])
         markdown = markdown.strip()
+        t4 = time.perf_counter()
 
         # 5. Zitat entfernen via Talon
         markdown = quotations.extract_from_plain(markdown)
         sig = None
         markdown, sig = signature.extract(markdown, sender=sender or "")
+        timings['quotation_and_signature_extraction'] = time.perf_counter() - t4
+        t5 = time.perf_counter()
 
         # 6. Markdown-hardbreaks entfernen
         markdown = re.sub(r'[ \t]+\n', '\n', markdown)
         markdown = re.sub(r'\n{3,}', '\n\n', markdown)
+        timings['hardbreak_cleanup'] = time.perf_counter() - t5
+        t6 = time.perf_counter()
 
         if openai_api_key and ai_signature_extraction:
             # 7. AI-gestützte Grußformel-Erkennung und -Extraktion
             final_markdown = extract_content_until_salutation_with_ai(markdown, openai_api_key, ai_model)
             log.info("AI signature extraction completed.")
+            timings['ai_signature_extraction'] = time.perf_counter() - t6
+            t7 = time.perf_counter()
         else:
             # 7. Grußformel + Name aus Markdown beibehalten, danach abschneiden
             final_markdown = extract_content_until_salutation(markdown)
-          # 8. AI-Bildverarbeitung - NUR wenn OpenAI Key vorhanden und NACH der Signaturentfernung
+            timings['ai_signature_extraction'] = 0.0
+            t7 = time.perf_counter()
+
+        # 8. AI-Bildverarbeitung - NUR wenn OpenAI Key vorhanden und NACH der Signaturentfernung
         image_info = {}
         if openai_api_key and final_markdown:
             image_info = process_images_parallel_with_ai(
                 final_markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt, ai_model
             )
-            
-            # Bilder in Markdown mit AI-Beschreibungen ersetzen
+            timings['ai_image_processing'] = time.perf_counter() - t7
+            t8 = time.perf_counter()
             if image_info:
                 final_markdown = replace_images_with_ai_descriptions(final_markdown, image_info)
+                timings['ai_image_replacement'] = time.perf_counter() - t8
+            else:
+                timings['ai_image_replacement'] = 0.0
+        else:
+            timings['ai_image_processing'] = 0.0
+            timings['ai_image_replacement'] = 0.0
 
         # 9. Signatur-Behandlung für Response
         sig_markdown = None
@@ -254,19 +345,27 @@ def html_to_markdown():
                 sig_markdown = None
 
         response_data = {
-            'original_html': html_content,
             'markdown': final_markdown,
-            'intermediate_markdown': markdown,
             'email_sender': sender,
-            'removed_markdown_signature': str(sig_markdown) if sig_markdown else None,
-            'removed_html_signature': str(sig_html) if sig_html else None,
-            'removed_plain_signature': str(sig) if sig else None
+        }
+
+        timings['total_processing_time'] = time.perf_counter() - t0
+
+        response_data['processing_summary'] = {
+            'content' : {
+                'intermediate_markdown': markdown,
+                'original_html': html_content,
+                'removed_markdown_signature': str(sig_markdown) if sig_markdown else None,
+                'removed_html_signature': str(sig_html) if sig_html else None,
+                'removed_plain_signature': str(sig) if sig else None
+            },
+            'timing': timings
         }
         
         # Füge Bildinformationen hinzu wenn vorhanden
         if image_info:
             response_data['processed_images'] = {}
-            response_data['ai_processing_summary'] = {
+            response_data['processing_summary']['ai'] = {
                 'total_images': len(image_info),
                 'ai_model_used': ai_model,
                 'custom_prompt_used': bool(ai_prompt.strip()),
@@ -289,9 +388,8 @@ def html_to_markdown():
 
     except Exception as e:
         log.error(f"Error processing HTML to Markdown: {str(e)}")
-        raise BadRequest(f"Error processing HTML: {str(e)}")
 
-def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str, ai_model="gpt-4.1-mini") -> str:
+def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str, ai_model=DEFAULT_AI_MODEL) -> str:
     """
     Nutzt AI, um
     - die letzte Zeile der Grußformel im Markdown zu finden
@@ -313,6 +411,10 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
         f"Email Markdown:\n{markdown}"
     )
 
+    input_token_estimate = int(len(markdown) / 3.5)  # konservativ
+    max_tokens = min(1500, max(300, int(input_token_estimate * 1.2)))  # Reserve für Output
+
+
     try:
         response = client.chat.completions.create(
             model=ai_model,
@@ -320,7 +422,7 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
                 {"role": "system", "content": "You are an assistant specialized in email content processing."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=1500,
+            max_tokens=max_tokens,
             temperature=0.1
         )
         cleaned_markdown = response.choices[0].message.content.strip()
@@ -330,40 +432,59 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
         log.error(f"Error during AI processing: {e}")
         return markdown
 
+def remove_social_links_from_line(line: str) -> str:
+    """
+    Entfernt alle ![](...) und [](...) Links zu bekannten Social-Media-Plattformen
+    (z. B. Twitter, LinkedIn, YouTube, Blog etc.), unabhängig davon ob sie am
+    Anfang, in der Mitte oder am Ende der Zeile stehen.
+    """
+    social_re = re.compile(
+        r'(!?\[\])\(\s*(https?:\/\/)?(www\.)?(x\.com|twitter\.com|linkedin\.com|youtube\.com|youtu\.be|'
+        r'blog\.[^)]*|[^)]*utm_.*?)\s*\)',
+        re.IGNORECASE
+    )
+    return social_re.sub('', line).strip()
+
 def extract_content_until_salutation(markdown):
     """
-    Extrahiert Inhalt bis zur Grußformel + Name und schneidet danach ab.
-    Dies ist die elegante Version der Grußformel-Logik.
+    Extrahiert Inhalt bis zur Grußformel + Name und ggf. nachfolgende Zeilen,
+    solange kein Trennzeichen wie ___ oder --- oder | erscheint.
+    Zusätzlich werden typische Social-Media-/Marketing-Links entfernt.
     """
     lines = markdown.strip().splitlines()
     result = []
-    
-    # Verbesserte Regex-Patterns für deutsche und englische Grußformeln
-    salute_re = re.compile(r'(?i)^(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße)(\s*/\s*(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße))?[,:\s]*$')
-    name_re = re.compile(r'^[A-ZÄÖÜa-zäöüß][A-ZÄÖÜa-zäöüß\s\-\.]{1,30}$')
 
-    for i, line in enumerate(lines):
+    # Regex für Grußformeln
+    salute_re = re.compile(
+        r'(?i)^(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
+        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße)'
+        r'(\s*/\s*(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
+        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße))?[,:\s]*$'
+    )
+    # Trennzeichen (---, ___, |, etc.)
+    separator_re = re.compile(r'^[-_|\s]{3,}$')
+   
+
+    found_salute = False
+    i = 0
+    j = 0
+    while (i+j) < len(lines) and j < 6:
+        line = remove_social_links_from_line(lines[i+j])
         line_stripped = line.strip()
-        if not line_stripped:
-            # Füge leere Zeilen nur hinzu wenn wir noch nicht bei der Grußformel sind
-            if not any(salute_re.match(l.strip()) for l in result if l.strip()):
-                result.append(line)
-            continue
-            
-        result.append(line)
+       
+        # Wenn Grußformel erkannt
+        if not found_salute and salute_re.match(line_stripped):
+            found_salute = True
+            j += 1
+        elif found_salute:
+            if separator_re.match(line_stripped):
+                break
+            else:
+                j += 1
+        else:
+            i += 1
         
-        # Prüfe auf Grußformel
-        if salute_re.match(line_stripped):
-            # Schaue nach dem Namen in den nächsten Zeilen (bis zu 2 Zeilen weiter)
-            for j in range(i + 1, min(i + 3, len(lines))):
-                next_line = lines[j].strip()
-                if next_line and name_re.match(next_line) and len(next_line.split()) <= 3:
-                    # Füge leere Zeile zwischen Grußformel und Name hinzu wenn nötig
-                    if j > i + 1:
-                        result.append("")
-                    result.append(lines[j])
-                    break
-            break
+        result.append(line)
 
     return "\n".join(result).strip()
 
@@ -464,27 +585,28 @@ def download_image(url, local_path):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        
+          # get the current time to measure download time
+        current_time = time.time()
+
         # Reduziertes Timeout für bessere Performance
         response = requests.get(url, headers=headers, timeout=8, stream=True)
         response.raise_for_status()
         
         # Prüfe Content-Type
-        content_type = response.headers.get('content-type', '').lower()
+        content_type = response.headers.get('content-type', '').lower()        
         if not content_type.startswith('image/'):
-            log.warning(f"URL does not return an image: {url} (Content-Type: {content_type})")
+            log.warning(f"URL does not return an image: {sanitize_url_for_logging(url)} (Content-Type: {content_type})")
             return False
-            
-        # Speichere das Bild
+              # Speichere das Bild
         with open(local_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         
-        log.debug(f"Image downloaded: {url}")
+        log.info(f"Image downloaded: {sanitize_url_for_logging(url)} -> {local_path} (Time: {time.time() - current_time:.2f}s)")
         return True
         
     except Exception as e:
-        log.error(f"Error downloading image {url}: {str(e)}")
+        log.error(f"Error downloading image {sanitize_url_for_logging(url)}: {str(e)}")
         return False
 
 def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai_prompt, ai_model):
@@ -510,11 +632,10 @@ def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai
         if not client:
             log.error("Failed to get OpenAI client")
             return None
-        
-        # Download the image
+          # Download the image
         success = download_image(task_data['url'], task_data['path'])
         if not success:
-            log.error(f"Failed to download image: {task_data['url']}")
+            log.error(f"Failed to download image: {sanitize_url_for_logging(task_data['url'])}")
             return None
             
         temp_file = task_data['path']
@@ -554,9 +675,7 @@ def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai
                 os.remove(temp_file)
             except Exception as e:
                 log.warning(f"Failed to delete temp file {temp_file}: {str(e)}")
-
-
-def generate_ai_description_with_marker(client, image_path, alt_text, markdown_context, custom_prompt="", model="gpt-4.1-mini"):
+def generate_ai_description_with_marker(client, image_path, alt_text, markdown_context, custom_prompt="", model=DEFAULT_AI_MODEL):
     """
     Generates AI description for a single image using the ![CURRENT_IMAGE]() marker approach.
     Optimized for speed - no caching since we process different images each time.
@@ -622,9 +741,7 @@ Please provide a description for the image marked as ![CURRENT_IMAGE]()."""
     except Exception as e:
         log.error(f"Error generating AI description with marker: {str(e)}")
         return "AI description could not be generated."
-
-
-def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model="gpt-4.1-mini", max_workers=6):
+def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model=DEFAULT_AI_MODEL, max_workers=6):
     """
     Processes all images from markdown in parallel - each image is downloaded and AI-described individually.
     Uses the ![CURRENT_IMAGE]() marker approach for contextual AI descriptions.
@@ -742,7 +859,10 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
                         log.error(f"Error in parallel task for {task['src']}: {str(e)}")
             
             log.info(f"Parallel processing completed: {len(image_info)}/{len(tasks)} images successful")
-            
+            return image_info
+        else:
+            log.info("No images found for parallel processing.")
+            return {}
     finally:
         # Temporäres Verzeichnis aufräumen
         try:
@@ -751,26 +871,6 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         except Exception as e:
             log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
             
-    return image_info
-
-def process_images_from_markdown(markdown, openai_api_key, base_url=None, auth_query_params=None, image_path="./images/", image_prefix="", ai_prompt="", ai_model="gpt-4.1-mini"):
-    """
-    Main wrapper function that calls the new parallel processing implementation.
-    This maintains compatibility with existing code while using the new parallel approach.
-    """
-    return process_images_parallel_with_ai(
-        markdown=markdown,
-        openai_api_key=openai_api_key,
-        base_url=base_url,
-        auth_query_params=auth_query_params,
-        image_path=image_path,
-        image_prefix=image_prefix,
-        ai_prompt=ai_prompt,
-        ai_model=ai_model,
-        max_workers=6  # Increased for better performance
-    )
-
-
 if __name__ == "__main__":
     import argparse
     
