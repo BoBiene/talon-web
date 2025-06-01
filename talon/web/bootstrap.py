@@ -1,7 +1,7 @@
 from talon import signature, quotations
 from flask import Flask, request, jsonify, json
 from werkzeug.exceptions import HTTPException, BadRequest
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 import html2text
 import re
 import talon
@@ -272,6 +272,12 @@ def html_to_markdown():
         timings['html_cleanup'] = time.perf_counter() - t0
         t1 = time.perf_counter()
 
+        removed_trackers = remove_tracking_pixels(soup)
+        timings['tracker_removal'] = time.perf_counter() - t1
+
+        if removed_trackers:
+            log.info(f"Removed {len(removed_trackers)} tracking pixels: {removed_trackers}")
+
         # 2. Signatur aus HTML entfernen
         sig_html = None
         clean_html, sig_html = signature.extract(str(soup), sender=sender or "")
@@ -384,6 +390,7 @@ def html_to_markdown():
                     'full_url': info.get('full_url', src)
                 }
 
+        log.info(f"HTML to Markdown processing completed in {timings['total_processing_time']:.4f}s")
         return jsonify(response_data)
 
     except Exception as e:
@@ -431,6 +438,50 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
     except Exception as e:
         log.error(f"Error during AI processing: {e}")
         return markdown
+def remove_tracking_pixels(soup: BeautifulSoup) -> list[str]:
+    """
+    Removes likely tracking pixels (1x1 images, invisible or suspicious sources) from the HTML.
+    
+    Args:
+        soup (BeautifulSoup): Parsed HTML document
+    
+    Returns:
+        List[str]: List of removed image `src` values for logging/debugging
+    """
+    removed_sources = []
+
+    for img in soup.find_all("img"):
+        if not isinstance(img, Tag):
+            continue
+
+        src = img.get("src", "").lower()
+        width = img.get("width")
+        height = img.get("height")
+        style = img.get("style", "").lower()
+        alt = img.get("alt", "").strip()
+
+        suspicious_domain = any(domain in src for domain in [
+            "hubspotlinks.com", "hs-analytics.net", "mailchimp.com", "clickdimensions.com",
+            "mandrillapp.com", "sendgrid.net", "emsecure.net"
+        ])
+
+        tiny_pixel = (
+            (width == "1" and height == "1")
+            or ("width: 1px" in style and "height: 1px" in style)
+            or "1x1" in src
+        )
+
+        hidden_style = (
+            "display: none" in style
+            or "visibility: hidden" in style
+            or "opacity: 0" in style
+        )
+
+        if suspicious_domain or tiny_pixel or hidden_style:
+            removed_sources.append(src)
+            img.decompose()
+
+    return removed_sources
 
 def remove_social_links_from_line(line: str) -> str:
     """
@@ -741,6 +792,7 @@ Please provide a description for the image marked as ![CURRENT_IMAGE]()."""
     except Exception as e:
         log.error(f"Error generating AI description with marker: {str(e)}")
         return "AI description could not be generated."
+    
 def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model=DEFAULT_AI_MODEL, max_workers=6):
     """
     Processes all images from markdown in parallel - each image is downloaded and AI-described individually.
