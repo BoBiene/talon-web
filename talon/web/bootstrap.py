@@ -475,13 +475,14 @@ def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-
 
 
 def download_image(url, local_path):
-    """Lädt ein Bild von einer URL herunter und speichert es lokal."""
+    """Lädt ein Bild von einer URL herunter und speichert es lokal (optimiert ohne Cache)."""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
         
-        response = requests.get(url, headers=headers, timeout=30, stream=True)
+        # Reduziertes Timeout für bessere Performance
+        response = requests.get(url, headers=headers, timeout=8, stream=True)
         response.raise_for_status()
         
         # Prüfe Content-Type
@@ -494,7 +495,8 @@ def download_image(url, local_path):
         with open(local_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-                
+        
+        log.debug(f"Image downloaded: {url}")
         return True
         
     except Exception as e:
@@ -638,18 +640,9 @@ def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai
 def generate_ai_description_with_marker(client, image_path, alt_text, markdown_context, custom_prompt="", model="gpt-4.1-mini"):
     """
     Generates AI description for a single image using the ![CURRENT_IMAGE]() marker approach.
-    
-    Args:
-        client: OpenAI client instance
-        image_path: Path to the downloaded image
-        alt_text: Original alt text from the image
-        markdown_context: The markdown context where ![CURRENT_IMAGE]() represents this image
-        custom_prompt: Custom AI prompt (optional)
-        model: AI model to use
-    
-    Returns:
-        String with AI-generated description
+    Optimized for speed - no caching since we process different images each time.
     """
+    
     try:
         # Use custom prompt or default
         if not custom_prompt.strip():
@@ -692,18 +685,19 @@ Please provide a description for the image marked as ![CURRENT_IMAGE]()."""
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:{content_type};base64,{image_data}",
-                                "detail": "low"  # Cost optimization
+                                "detail": "low"  # Cost and speed optimization
                             }
                         }
                     ]
                 }
             ],
-            max_tokens=300,
+            max_tokens=200,  # Reduced for speed
             temperature=0.1
         )
         
         description = response.choices[0].message.content.strip()
-        log.debug(f"Generated AI description: {description[:100]}...")
+        log.debug(f"AI description generated: {description[:50]}...")
+        
         return description
         
     except Exception as e:
@@ -711,10 +705,16 @@ Please provide a description for the image marked as ![CURRENT_IMAGE]()."""
         return "AI description could not be generated."
 
 
-def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model="gpt-4.1-mini", max_workers=4):
+def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt="", ai_model="gpt-4.1-mini", max_workers=6):
     """
     Processes all images from markdown in parallel - each image is downloaded and AI-described individually.
     Uses the ![CURRENT_IMAGE]() marker approach for contextual AI descriptions.
+    
+    Optimizations:
+    - Increased max_workers to 6 for better parallelization
+    - Reduced timeouts from 15s to 8s
+    - No caching (since different images each time)
+    - Faster AI model settings
     
     Args:
         markdown: The final markdown content (without signature)
@@ -725,7 +725,7 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         image_prefix: Prefix for filenames
         ai_prompt: Custom AI prompt
         ai_model: AI model (default: gpt-4.1-mini)
-        max_workers: Maximum number of parallel workers (default: 4)
+        max_workers: Maximum number of parallel workers (default: 6)
     
     Returns:
         dict: Image information with AI descriptions
@@ -848,7 +848,7 @@ def process_images_from_markdown(markdown, openai_api_key, base_url=None, auth_q
         image_prefix=image_prefix,
         ai_prompt=ai_prompt,
         ai_model=ai_model,
-        max_workers=4  # Default parallel workers
+        max_workers=6  # Increased for better performance
     )
 
 
