@@ -1,5 +1,5 @@
 # =============================================================================
-# BUILD STAGE - Kompilierung und Dependency Installation
+# BUILD STAGE - Compilation and Dependency Installation
 # =============================================================================
 FROM python:3.13-alpine AS builder
 
