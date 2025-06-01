@@ -70,6 +70,71 @@ def handle_bad_request(e):
     return response
 
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for docker-compose and monitoring."""
+    try:
+        # Basic health status
+        health_status = {
+            "status": "healthy",
+            "service": "talon-web",
+            "version": "1.0.0",
+            "timestamp": None
+        }
+          # Add timestamp
+        import datetime
+        health_status["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        # Test basic functionality - try to import talon modules
+        try:
+            from talon import signature, quotations
+            health_status["talon_modules"] = "ok"
+        except Exception as e:
+            health_status["talon_modules"] = f"error: {str(e)}"
+            health_status["status"] = "degraded"
+        
+        # Test OpenAI client creation (without API key)
+        try:
+            # Just test if the function works without actually creating a client
+            get_openai_client(None)
+            health_status["openai_client_function"] = "ok"
+        except Exception as e:
+            health_status["openai_client_function"] = f"error: {str(e)}"
+            health_status["status"] = "degraded"
+        
+        # Return appropriate HTTP status code
+        if health_status["status"] == "healthy":
+            return jsonify(health_status), 200
+        else:
+            return jsonify(health_status), 503
+            
+    except Exception as e:
+        log.error(f"Health check failed: {str(e)}")
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "service": "talon-web"
+        }), 503
+
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint providing basic service information."""
+    return jsonify({
+        "service": "talon-web",
+        "description": "Talon Email Processing API",
+        "version": "1.0.0",
+        "endpoints": {
+            "health": "/health",
+            "signature_extraction": "/talon/signature",
+            "quotations_text": "/talon/quotations/text", 
+            "quotations_html": "/talon/quotations/html",
+            "html_to_markdown": "/talon/html-to-markdown"
+        },
+        "status": "running"
+    })
+
+
 @app.route('/talon/signature', methods=['GET', 'POST'])
 def get_signature():
     email_content = request.form.get('email_content')
