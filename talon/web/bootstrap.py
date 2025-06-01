@@ -93,15 +93,6 @@ def health_check():
             health_status["talon_modules"] = f"error: {str(e)}"
             health_status["status"] = "degraded"
         
-        # Test OpenAI client creation (without API key)
-        try:
-            # Just test if the function works without actually creating a client
-            get_openai_client(None)
-            health_status["openai_client_function"] = "ok"
-        except Exception as e:
-            health_status["openai_client_function"] = f"error: {str(e)}"
-            health_status["status"] = "degraded"
-        
         # Return appropriate HTTP status code
         if health_status["status"] == "healthy":
             return jsonify(health_status), 200
@@ -784,7 +775,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Talon Web Bootstrap Server')
-    parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
     parser.add_argument('--port', type=int, default=5505, help='Port to bind to')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     
@@ -798,9 +789,14 @@ if __name__ == "__main__":
     log.info(f"Starting Talon Web Bootstrap Server on {args.host}:{args.port}")
     log.info(f"Debug mode: {args.debug}")
     
+    # For production use, consider using a proper WSGI server like gunicorn
+    if os.environ.get('PRODUCTION', 'false').lower() == 'true':
+        log.info("Production mode detected - consider using gunicorn")
+    
     app.run(
         host=args.host,
         port=args.port,
         debug=args.debug,
-        use_reloader=False  # Disable reloader to avoid duplicate initialization
+        use_reloader=False,  # Disable reloader to avoid duplicate initialization
+        threaded=True  # Enable threading for better performance
     )

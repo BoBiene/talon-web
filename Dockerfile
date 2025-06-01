@@ -44,11 +44,13 @@ FROM python:3.13-alpine AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=0 \
     PYTHONOPTIMIZE=1 \
-    PYTHONPATH=/app:/opt/venv/lib/python3.13/site-packages
+    PYTHONPATH=/app:/opt/venv/lib/python3.13/site-packages \
+    PRODUCTION=true
 
 # Nur Runtime-Dependencies installieren (viel kleiner!)
 RUN apk update && \
     apk add --no-cache \
+        curl \
         libffi \
         libgomp \
         libstdc++ \
@@ -76,9 +78,9 @@ USER talon
 
 EXPOSE 5505
 
-# Optimierter Healthcheck (nutzt das interne Python)
-#HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-#    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5505/health', timeout=10)" || exit 1
+# Healthcheck für Docker
+HEALTHCHECK --interval=30s --timeout=30s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:5505/health || exit 1
 
 ENTRYPOINT ["python3"]
 CMD ["/app/talon/web/bootstrap.py"]
