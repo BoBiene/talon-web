@@ -112,7 +112,7 @@ def health_check():
         log.error(f"Health check failed: {str(e)}")
         return jsonify({
             "status": "unhealthy",
-            "error": str(e),
+            "error": "An internal error occurred. Please contact support.",
             "service": "talon-web"
         }), 503
 
