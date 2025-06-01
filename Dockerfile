@@ -10,7 +10,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
-# System-Dependencies für Build installieren
+# Install system dependencies for build
 RUN apk update && \
     apk add --no-cache \
         build-base \
@@ -22,21 +22,19 @@ RUN apk update && \
         linux-headers \
         musl-dev
 
-# Python Dependencies zuerst (für besseres Docker Layer Caching)
+# Install Python dependencies first (for better Docker layer caching)
 COPY requirements.txt setup.py MANIFEST.in README.md ./
 RUN pip3 install --upgrade pip && \
     pip3 install --prefix=/opt/venv -r requirements.txt && \
     pip3 install --prefix=/opt/venv .
 
-# Source Code kopieren und vorkompilieren
+# Copy source code and precompile
 COPY . .
-RUN python3 -m compileall -b /app/talon && \
-    python3 -m compileall -b /app/tests && \
-    find /app -name "*.py" -not -path "*/venv/*" -not -path "*/__pycache__/*" -exec python3 -m py_compile {} \; && \
+RUN python3 -m compileall -b -x "venv|__pycache__" /app && \
     python3 -c "import sys; sys.path.insert(0, '/opt/venv/lib/python3.13/site-packages'); import talon; import talon.web.bootstrap; print('✓ All modules compiled successfully')"
 
 # =============================================================================
-# RUNTIME STAGE - Minimales Production Image
+# RUNTIME STAGE - Minimal Production Image
 # =============================================================================
 FROM python:3.13-alpine AS runtime
 
@@ -47,7 +45,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:/opt/venv/lib/python3.13/site-packages \
     PRODUCTION=true
 
-# Nur Runtime-Dependencies installieren (viel kleiner!)
+# Install only runtime dependencies (much smaller!)
 RUN apk update && \
     apk add --no-cache \
         curl \
@@ -59,26 +57,26 @@ RUN apk update && \
         openblas && \
     rm -rf /var/cache/apk/*
 
-# Non-root User für Sicherheit
+# Non-root user for security
 RUN addgroup -g 1000 talon && \
     adduser -D -u 1000 -G talon talon
 
 WORKDIR /app
 
-# Kopiere vorkompilierte Dependencies aus Build Stage
+# Copy precompiled dependencies from build stage
 COPY --from=builder /opt/venv /opt/venv
 
-# Kopiere vorkompilierten Application Code aus Build Stage
+# Copy precompiled application code from build stage
 COPY --from=builder /app /app
 
-# Nur Anwendungscode zu talon User zuweisen
+# Assign application code to talon user only
 RUN chown -R talon:talon /app
 
 USER talon
 
 EXPOSE 5505
 
-# Healthcheck für Docker
+# Docker healthcheck
 HEALTHCHECK --interval=30s --timeout=30s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5505/health || exit 1
 
