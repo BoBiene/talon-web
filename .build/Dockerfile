@@ -1,4 +1,4 @@
-FROM python:3.12-slim-buster AS deps
+FROM python:3.13-slim-buster AS deps
 
 RUN apt-get update && \
     apt-get install -y \
