@@ -390,6 +390,7 @@ def html_to_markdown():
                     'full_url': info.get('full_url', src)
                 }
 
+        log.info(f"HTML to Markdown processing completed in {timings['total_processing_time']:.4f}s")
         return jsonify(response_data)
 
     except Exception as e:
