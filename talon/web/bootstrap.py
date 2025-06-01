@@ -122,6 +122,7 @@ def html_to_markdown():
         image_prefix = data.get('image_prefix', '')
         ai_prompt = data.get('ai_prompt', '')
         ai_model = data.get('ai_model', 'gpt-4.1-mini')
+        ai_signature_extraction = data.get('ai_signature_extraction', False)
     else:
         html_content = request.form.get('html')
         sender = request.form.get('email_sender')
@@ -132,6 +133,7 @@ def html_to_markdown():
         image_prefix = request.form.get('image_prefix', '')
         ai_prompt = request.form.get('ai_prompt', '')
         ai_model = request.form.get('ai_model', 'gpt-4.1-mini')
+        ai_signature_extraction = request.form.get('ai_signature_extraction', 'false').lower() == 'true'
         
     if not html_content:
         raise BadRequest("Required parameter 'html' is missing.")
@@ -170,9 +172,10 @@ def html_to_markdown():
         markdown = re.sub(r'[ \t]+\n', '\n', markdown)
         markdown = re.sub(r'\n{3,}', '\n\n', markdown)
 
-        if openai_api_key:
+        if openai_api_key and ai_signature_extraction:
             # 7. AI-gestützte Grußformel-Erkennung und -Extraktion
             final_markdown = extract_content_until_salutation_with_ai(markdown, openai_api_key, ai_model)
+            log.info("AI signature extraction completed.")
         else:
             # 7. Grußformel + Name aus Markdown beibehalten, danach abschneiden
             final_markdown = extract_content_until_salutation(markdown)
@@ -310,44 +313,6 @@ def extract_content_until_salutation(markdown):
 
 
 
-def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-mini"):
-    """Fallback: Generiert eine AI-Beschreibung für ein einzelnes Bild."""
-    try:
-        with open(image_path, 'rb') as image_file:
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-        prompt = f"""Beschreibe dieses Bild in 1-2 präzisen deutschen Sätzen. 
-        Konzentriere dich auf die wichtigsten visuellen Elemente und den Kontext.
-        Falls verfügbar, berücksichtige den Alt-Text: "{alt_text}"
-        
-        Antworte nur mit der Beschreibung, ohne zusätzliche Formatierung."""
-        
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_data}",
-                                "detail": "low"
-                            }
-                        }
-                    ]
-                }
-            ],        max_tokens=200
-        )
-        
-        return response.choices[0].message.content.strip()
-        
-    except Exception as e:
-        log.error(f"Error generating single AI description: {str(e)}")
-        return "Bildbeschreibung konnte nicht generiert werden."
-
-
 def get_file_extension_from_url(url):
     """Ermittelt die Dateierweiterung aus einer URL."""
     parsed = urlparse(url)
@@ -436,43 +401,6 @@ def get_reply_html():
         raise BadRequest("Required parameter 'email_content' is missing.")
     return jsonify(json_response)
 
-def generate_ai_description_single(client, image_path, alt_text, model="gpt-4.1-mini"):
-    """Fallback: Generiert eine AI-Beschreibung für ein einzelnes Bild."""
-    try:
-        with open(image_path, 'rb') as image_file:
-            image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-        prompt = f"""Beschreibe dieses Bild in 1-2 präzisen deutschen Sätzen. 
-        Konzentriere dich auf die wichtigsten visuellen Elemente und den Kontext.
-        Falls verfügbar, berücksichtige den Alt-Text: "{alt_text}"
-        
-        Antworte nur mit der Beschreibung, ohne zusätzliche Formatierung."""
-        
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_data}",
-                                "detail": "low"
-                            }
-                        }
-                    ]
-                }
-            ],        max_tokens=200
-        )
-        
-        return response.choices[0].message.content.strip()
-        
-    except Exception as e:
-        log.error(f"Error generating single AI description: {str(e)}")
-        return "Bildbeschreibung konnte nicht generiert werden."
-
 
 def download_image(url, local_path):
     """Lädt ein Bild von einer URL herunter und speichert es lokal (optimiert ohne Cache)."""
@@ -502,71 +430,6 @@ def download_image(url, local_path):
     except Exception as e:
         log.error(f"Error downloading image {url}: {str(e)}")
         return False
-
-
-def download_image_parallel(image_data):
-    """
-    Wrapper-Funktion für parallelen Download eines einzelnen Bildes.
-    Erwartet ein Dictionary mit 'url', 'path' und optional anderen Metadaten.
-    """
-    url = image_data['url']
-    path = image_data['path']
-    
-    success = download_image(url, path)
-    return {
-        **image_data,
-        'success': success
-    }
-
-
-def download_images_parallel(images_data, max_workers=4):
-    """
-    Lädt mehrere Bilder parallel herunter.
-    
-    Args:
-        images_data: Liste von Dictionaries mit 'url' und 'path' Schlüsseln
-        max_workers: Maximale Anzahl paralleler Downloads (default: 4)
-    
-    Returns:
-        Liste von Dictionaries mit Ergebnissen (success=True/False)
-    """
-    if not images_data:
-        return []
-    
-    results = []
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Starte alle Download-Tasks
-        future_to_data = {
-            executor.submit(download_image_parallel, img_data): img_data 
-            for img_data in images_data
-        }
-        
-        # Sammle Ergebnisse sobald sie verfügbar sind
-        for future in as_completed(future_to_data):
-            try:
-                result = future.result()
-                results.append(result)
-                
-                if result['success']:
-                    log.info(f"✓ Downloaded: {result['url']} -> {result['path']}")
-                else:
-                    log.warning(f"✗ Failed: {result['url']}")
-                    
-            except Exception as e:
-                img_data = future_to_data[future]
-                log.error(f"Exception downloading {img_data['url']}: {str(e)}")
-                results.append({
-                    **img_data,
-                    'success': False,
-                    'error': str(e)
-                })
-    
-    successful_downloads = sum(1 for r in results if r['success'])
-    log.info(f"Parallel download completed: {successful_downloads}/{len(results)} successful")
-    
-    return results
-
 
 def process_single_image_with_ai(task_data, openai_api_key, markdown_context, ai_prompt, ai_model):
     """
