@@ -26,6 +26,77 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 DEFAULT_AI_MODEL = "gpt-4.1-mini"
 
+known_english_salutations = [
+    "best regards", "kind regards", "warm regards", "regards", "with kind regards", "with best regards",
+    "thanks", "thank you", "many thanks", "thanks again", "thanks and regards",
+    "cheers", "sincerely", "sincerely yours", "yours truly", "yours faithfully",
+    "with appreciation", "with gratitude", "respectfully", "respectfully yours",
+    "with warmest regards", "warmest regards"
+]
+
+known_salutations = {
+    "german": [
+        "mit freundlichen grüßen", "freundliche grüße", "viele grüße", "beste grüße", "herzliche grüße",
+        "liebe grüße", "schöne grüße", "hochachtungsvoll", "danke", "dankeschön", "danke schön",
+        "danke und gruß", "danke und alles gute", "mfg", "mit besten grüßen", "gruß", "grüße"
+    ],
+    "danish": [
+        "med venlig hilsen", "venlig hilsen", "mvh", "bedste hilsner", "tak", "på forhånd tak",
+        "tak og venlig hilsen", "med tak", "de bedste hilsner"
+    ],
+    "norwegian": [
+        "med vennlig hilsen", "vennlig hilsen", "takk", "på forhånd takk", "beste hilsener"
+    ],
+    "swedish": [
+        "med vänliga hälsningar", "vänliga hälsningar", "bästa hälsningar", "tack", "tack så mycket"
+    ],
+    "finnish": [
+        "ystävällisin terveisin", "parhain terveisin", "kiitos", "kiitoksia"
+    ],
+    "french": [
+        "cordialement", "bien à vous", "salutations distinguées", "meilleures salutations",
+        "avec mes salutations", "sincères salutations", "merci", "bien cordialement"
+    ],
+    "spanish": [
+        "saludos cordiales", "atentamente", "cordialmente", "un saludo", "muchas gracias", "gracias"
+    ],
+    "portuguese": [
+        "cumprimentos", "atenciosamente", "com os melhores cumprimentos", "obrigado", "obrigada"
+    ],
+    "italian": [
+        "cordiali saluti", "distinti saluti", "grazie", "saluti", "un caro saluto", "con stima"
+    ],
+    "dutch": [  # Benelux
+        "met vriendelijke groet", "vriendelijke groeten", "groeten", "bedankt", "hartelijke groeten"
+    ],
+    "polish": [
+        "z poważaniem", "pozdrawiam", "serdeczne pozdrowienia", "dziękuję", "z wyrazami szacunku"
+    ],
+    "turkish": [
+        "saygılarımla", "iyi çalışmalar", "teşekkür ederim", "selamlar", "iyi günler"
+    ],
+    "japanese": [
+        "よろしくお願いします", "敬具", "よろしくお願いいたします", "ありがとうございます"
+    ],
+    "korean": [
+        "감사합니다", "안부 인사드립니다", "고맙습니다", "진심으로 감사합니다"
+    ],
+    "chinese": [
+        "此致敬礼", "谢谢", "祝好", "敬上", "感谢您"
+    ],
+    "english": [  # optional fallback
+        "best regards", "kind regards", "warm regards", "thanks", "thank you", "cheers",
+        "sincerely", "yours truly", "with appreciation", "regards"
+    ],
+    "brazilian_portuguese": [
+        "atenciosamente", "obrigado", "obrigada", "com os melhores cumprimentos"
+    ],
+    "us_english": [  # optional for nuance
+        "best regards", "sincerely", "yours truly", "respectfully", "with gratitude", "thanks"
+    ]
+}
+
+
 talon.init()
 
 log = logging.getLogger(__name__)
@@ -435,6 +506,7 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
     except Exception as e:
         log.error(f"Error during AI processing: {e}")
         return markdown
+    
 def remove_tracking_pixels(soup: BeautifulSoup) -> list[str]:
     """
     Removes likely tracking pixels (1x1 images, invisible or suspicious sources) from the HTML.
@@ -493,6 +565,24 @@ def remove_social_links_from_line(line: str) -> str:
     )
     return social_re.sub('', line).strip()
 
+def is_salutation_line(line: str) -> bool:
+    """
+    Returns True if the line is a known English salutation or a bilingual salutation
+    where at least one part is a known English salutation (e.g. 'Best regards / Med venlig hilsen').
+    """
+    known = r'(' + '|'.join(re.escape(s) for s in known_english_salutations) + r')'
+    any_phrase = r'[^/]{2,50}'  # any other phrase (except just /), 2–50 characters
+
+    # Matches:
+    # - known English salutation alone
+    # - known English salutation + local (A / B or B / A)
+    # - optional punctuation at the end
+    pattern = re.compile(
+        rf'(?i)^\s*((?:{known}\s*/\s*{any_phrase})|(?:{any_phrase}\s*/\s*{known})|{known})\s*[,:\s]*$'
+    )
+
+    return pattern.match(line.strip()) is not None
+
 def extract_content_until_salutation(markdown):
     """
     Extrahiert Inhalt bis zur Grußformel + Name und ggf. nachfolgende Zeilen,
@@ -502,36 +592,28 @@ def extract_content_until_salutation(markdown):
     lines = markdown.strip().splitlines()
     result = []
 
-    # Regex für Grußformeln
-    salute_re = re.compile(
-        r'(?i)^(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
-        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße)'
-        r'(\s*/\s*(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
-        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße))?[,:\s]*$'
-    )
     # Trennzeichen (---, ___, |, etc.)
     separator_re = re.compile(r'^[-_|\s]{3,}$')
-   
+    image_re = re.compile(r'!\[.*?\]\(.*?\)')  # Markdown-Bild-Zeile
 
     found_salute = False
     i = 0
     j = 0
-    while (i+j) < len(lines) and j < 6:
-        line = remove_social_links_from_line(lines[i+j])
+    while (i + j) < len(lines) and j < 6:
+        line = remove_social_links_from_line(lines[i + j])
         line_stripped = line.strip()
-       
-        # Wenn Grußformel erkannt
-        if not found_salute and salute_re.match(line_stripped):
+
+        if not found_salute and is_salutation_line(line_stripped):
             found_salute = True
             j += 1
         elif found_salute:
-            if separator_re.match(line_stripped):
+            if separator_re.match(line_stripped) or image_re.search(line_stripped):
                 break
             else:
                 j += 1
         else:
             i += 1
-        
+
         result.append(line)
 
     return "\n".join(result).strip()
