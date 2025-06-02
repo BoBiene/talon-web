@@ -366,7 +366,7 @@ def html_to_markdown():
     if not html_content:
         raise BadRequest("Required parameter 'html' is missing.")
     
-    auth_config = [];
+    auth_config = {};
     if isinstance(auth_query_params, str):
         # Check if it is JSON
         try:
