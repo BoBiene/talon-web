@@ -95,18 +95,42 @@ known_salutations = {
         "best regards", "sincerely", "yours truly", "respectfully", "with gratitude", "thanks"
     ]
 }
+# Gather all known salutations (lowercase) from all languages
 all_salutations = set(s.lower() for s in known_english_salutations)
 for lang_list in known_salutations.values():
     all_salutations.update(s.lower() for s in lang_list)
 
+# Separator regex for bilingual salutations: slash (/), pipe (|), comma (,), semicolon (;)
+# Allows optional whitespace around the separator.
+separator_re = r'\s*[/|,;]\s*'
+
+# Pattern for a known English salutation (case-insensitive, with word boundaries)
+known = r'(' + '|'.join(re.escape(s) for s in known_english_salutations) + r')'
+
+# Pattern for the "other side" of a bilingual salutation (any phrase except separator chars, 2–50 chars)
+any_phrase = r'[^/|,;]{2,50}'
+
+# Main pattern:
+# - Matches lines that are either:
+#   - a known English salutation only, e.g., "Best regards"
+#   - a bilingual salutation: [English separator other], e.g., "Best regards | Mit freundlichen Grüßen"
+#   - a bilingual salutation: [other separator English], e.g., "Mit freundlichen Grüßen / Best regards"
+# - Allows optional whitespace and punctuation at the end
+#
+# Explanation:
+#   ^\s*              : line start, optional whitespace
+#   (                 : begin main group
+#      (?:...|...)    : either [English separator other] or [other separator English]
+#      | known        : OR just English only
+#   )
+#   \s*[,:\s]*$       : optional trailing comma, colon, whitespace, line end
+#
 known_en_pattern = re.compile(
-    r'(?i)^\s*((?:' +
-    '|'.join(re.escape(s) for s in known_english_salutations) +
-    r'\s*/\s*[^/]{2,50})|(?:[^/]{2,50}\s*/\s*' +
-    '|'.join(re.escape(s) for s in known_english_salutations) +
-    r')|(' +
-    '|'.join(re.escape(s) for s in known_english_salutations) +
-    r'))\s*[,:\s]*$'
+    rf'(?i)^\s*('
+    rf'(?:{known}{separator_re}{any_phrase})'      # English + separator + other language
+    rf'|(?:{any_phrase}{separator_re}{known})'     # Other language + separator + English
+    rf'|{known}'                                   # English only
+    rf')\s*[,:\s]*$'
 )
 
 talon.init()
