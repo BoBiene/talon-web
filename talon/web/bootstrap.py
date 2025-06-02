@@ -2,7 +2,7 @@ from talon import signature, quotations
 from flask import Flask, request, jsonify, json
 from werkzeug.exceptions import HTTPException, BadRequest
 from bs4 import BeautifulSoup, Tag
-import html2text
+from markdownify import markdownify as md, BACKSLASH, ATX
 import re
 import talon
 import logging
@@ -16,15 +16,122 @@ import tempfile
 import base64
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import datetime
 import warnings
 import time
 import sys
+import json
 
 # Suppress sklearn version warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 DEFAULT_AI_MODEL = "gpt-4.1-mini"
+
+known_english_salutations = [
+    "best regards", "kind regards", "warm regards", "regards", "with kind regards", "with best regards",
+    "thanks", "thank you", "many thanks", "thanks again", "thanks and regards",
+    "cheers", "sincerely", "sincerely yours", "yours truly", "yours faithfully",
+    "with appreciation", "with gratitude", "respectfully", "respectfully yours",
+    "with warmest regards", "warmest regards"
+]
+
+known_salutations = {
+    "german": [
+        "mit freundlichen grüßen", "freundliche grüße", "viele grüße", "beste grüße", "herzliche grüße",
+        "liebe grüße", "schöne grüße", "hochachtungsvoll", "danke", "dankeschön", "danke schön",
+        "danke und gruß", "danke und alles gute", "mfg", "mit besten grüßen", "gruß", "grüße"
+    ],
+    "danish": [
+        "med venlig hilsen", "venlig hilsen", "mvh", "bedste hilsner", "tak", "på forhånd tak",
+        "tak og venlig hilsen", "med tak", "de bedste hilsner"
+    ],
+    "norwegian": [
+        "med vennlig hilsen", "vennlig hilsen", "takk", "på forhånd takk", "beste hilsener"
+    ],
+    "swedish": [
+        "med vänliga hälsningar", "vänliga hälsningar", "bästa hälsningar", "tack", "tack så mycket"
+    ],
+    "finnish": [
+        "ystävällisin terveisin", "parhain terveisin", "kiitos", "kiitoksia"
+    ],
+    "french": [
+        "cordialement", "bien à vous", "salutations distinguées", "meilleures salutations",
+        "avec mes salutations", "sincères salutations", "merci", "bien cordialement"
+    ],
+    "spanish": [
+        "saludos cordiales", "atentamente", "cordialmente", "un saludo", "muchas gracias", "gracias"
+    ],
+    "portuguese": [
+        "cumprimentos", "atenciosamente", "com os melhores cumprimentos", "obrigado", "obrigada"
+    ],
+    "italian": [
+        "cordiali saluti", "distinti saluti", "grazie", "saluti", "un caro saluto", "con stima"
+    ],
+    "dutch": [  # Benelux
+        "met vriendelijke groet", "vriendelijke groeten", "groeten", "bedankt", "hartelijke groeten"
+    ],
+    "polish": [
+        "z poważaniem", "pozdrawiam", "serdeczne pozdrowienia", "dziękuję", "z wyrazami szacunku"
+    ],
+    "turkish": [
+        "saygılarımla", "iyi çalışmalar", "teşekkür ederim", "selamlar", "iyi günler"
+    ],
+    "japanese": [
+        "よろしくお願いします", "敬具", "よろしくお願いいたします", "ありがとうございます"
+    ],
+    "korean": [
+        "감사합니다", "안부 인사드립니다", "고맙습니다", "진심으로 감사합니다"
+    ],
+    "chinese": [
+        "此致敬礼", "谢谢", "祝好", "敬上", "感谢您"
+    ],
+    "english": [  # optional fallback
+        "best regards", "kind regards", "warm regards", "thanks", "thank you", "cheers",
+        "sincerely", "yours truly", "with appreciation", "regards"
+    ],
+    "brazilian_portuguese": [
+        "atenciosamente", "obrigado", "obrigada", "com os melhores cumprimentos"
+    ],
+    "us_english": [  # optional for nuance
+        "best regards", "sincerely", "yours truly", "respectfully", "with gratitude", "thanks"
+    ]
+}
+# Gather all known salutations (lowercase) from all languages
+all_salutations = set(s.lower() for s in known_english_salutations)
+for lang_list in known_salutations.values():
+    all_salutations.update(s.lower() for s in lang_list)
+
+# Separator regex for bilingual salutations: slash (/), pipe (|), comma (,), semicolon (;)
+# Allows optional whitespace around the separator.
+separator_re = r'\s*[/|,;]\s*'
+
+# Pattern for a known English salutation (case-insensitive, with word boundaries)
+known = r'(' + '|'.join(re.escape(s) for s in known_english_salutations) + r')'
+
+# Pattern for the "other side" of a bilingual salutation (any phrase except separator chars, 2–50 chars)
+any_phrase = r'[^/|,;]{2,50}'
+
+# Main pattern:
+# - Matches lines that are either:
+#   - a known English salutation only, e.g., "Best regards"
+#   - a bilingual salutation: [English separator other], e.g., "Best regards | Mit freundlichen Grüßen"
+#   - a bilingual salutation: [other separator English], e.g., "Mit freundlichen Grüßen / Best regards"
+# - Allows optional whitespace and punctuation at the end
+#
+# Explanation:
+#   ^\s*              : line start, optional whitespace
+#   (                 : begin main group
+#      (?:...|...)    : either [English separator other] or [other separator English]
+#      | known        : OR just English only
+#   )
+#   \s*[,:\s]*$       : optional trailing comma, colon, whitespace, line end
+#
+known_en_pattern = re.compile(
+    rf'(?i)^\s*('
+    rf'(?:{known}{separator_re}{any_phrase})'      # English + separator + other language
+    rf'|(?:{any_phrase}{separator_re}{known})'     # Other language + separator + English
+    rf'|{known}'                                   # English only
+    rf')\s*[,:\s]*$'
+)
 
 talon.init()
 
@@ -258,6 +365,19 @@ def html_to_markdown():
         
     if not html_content:
         raise BadRequest("Required parameter 'html' is missing.")
+    
+    auth_config = {};
+    if isinstance(auth_query_params, str):
+        # Check if it is JSON
+        try:
+            auth_config = json.loads(auth_query_params)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback: Verwende den String als globale Auth-Parameter
+            log.warning("auth_query_params is not valid JSON, using as global parameter")
+    elif isinstance(auth_query_params, dict):
+        auth_config = auth_query_params
+    elif auth_query_params is not None:
+        log.warning("auth_query_params is not a valid type, expected dict or JSON string")
 
     try:
         # Zeitmessung für die einzelnen Schritte
@@ -281,37 +401,21 @@ def html_to_markdown():
         # 2. Signatur aus HTML entfernen
         sig_html = None
         clean_html, sig_html = signature.extract(str(soup), sender=sender or "")
-        timings['signature_extraction_html'] = time.perf_counter() - t1
-        t2 = time.perf_counter()
 
-        # 3. HTML zu Markdown konvertieren
-        h = html2text.HTML2Text()
-        h.ignore_links = False
-        h.ignore_images = False
-        h.ignore_emphasis = False
-        h.body_width = 0
-        h.unicode_snob = True
-        markdown = h.handle(clean_html)
+        timings['signature_extraction_html'] = time.perf_counter() - t1
+        t2 = time.perf_counter()        # 3. HTML zu Markdown konvertieren
+        markdown = md(
+            clean_html,
+            heading_style=ATX
+        )
         timings['html_to_markdown'] = time.perf_counter() - t2
         t3 = time.perf_counter()
-
-        # 4. Markdown-Postprocessing: Whitespace-Optimierung
-        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
-        markdown = '\n'.join([l.rstrip() for l in markdown.splitlines()])
-        markdown = markdown.strip()
-        t4 = time.perf_counter()
 
         # 5. Zitat entfernen via Talon
         markdown = quotations.extract_from_plain(markdown)
         sig = None
         markdown, sig = signature.extract(markdown, sender=sender or "")
-        timings['quotation_and_signature_extraction'] = time.perf_counter() - t4
-        t5 = time.perf_counter()
-
-        # 6. Markdown-hardbreaks entfernen
-        markdown = re.sub(r'[ \t]+\n', '\n', markdown)
-        markdown = re.sub(r'\n{3,}', '\n\n', markdown)
-        timings['hardbreak_cleanup'] = time.perf_counter() - t5
+        timings['quotation_and_signature_extraction'] = time.perf_counter() - t3
         t6 = time.perf_counter()
 
         if openai_api_key and ai_signature_extraction:
@@ -330,7 +434,7 @@ def html_to_markdown():
         image_info = {}
         if openai_api_key and final_markdown:
             image_info = process_images_parallel_with_ai(
-                final_markdown, openai_api_key, base_url, auth_query_params, image_path, image_prefix, ai_prompt, ai_model
+                final_markdown, openai_api_key, base_url, auth_config, image_path, image_prefix, ai_prompt, ai_model
             )
             timings['ai_image_processing'] = time.perf_counter() - t7
             t8 = time.perf_counter()
@@ -438,6 +542,7 @@ def extract_content_until_salutation_with_ai(markdown: str, openai_api_key: str,
     except Exception as e:
         log.error(f"Error during AI processing: {e}")
         return markdown
+    
 def remove_tracking_pixels(soup: BeautifulSoup) -> list[str]:
     """
     Removes likely tracking pixels (1x1 images, invisible or suspicious sources) from the HTML.
@@ -496,6 +601,15 @@ def remove_social_links_from_line(line: str) -> str:
     )
     return social_re.sub('', line).strip()
 
+def is_salutation_line(line: str) -> bool:
+    line_clean = line.strip().lower().strip("!,: ")
+
+    if line_clean in all_salutations:
+        return True
+    if known_en_pattern.match(line.strip()):
+        return True
+    return False
+
 def extract_content_until_salutation(markdown):
     """
     Extrahiert Inhalt bis zur Grußformel + Name und ggf. nachfolgende Zeilen,
@@ -505,36 +619,28 @@ def extract_content_until_salutation(markdown):
     lines = markdown.strip().splitlines()
     result = []
 
-    # Regex für Grußformeln
-    salute_re = re.compile(
-        r'(?i)^(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
-        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße)'
-        r'(\s*/\s*(best\s+regards?|kind\s+regards?|warm\s+regards?|thanks?|cheers?|sincerely|yours?\s+truly|'
-        r'mit\s+freundlichen\s+grüßen|viele\s+grüße|beste\s+grüße|schöne\s+grüße|herzliche\s+grüße|liebe\s+grüße))?[,:\s]*$'
-    )
     # Trennzeichen (---, ___, |, etc.)
     separator_re = re.compile(r'^[-_|\s]{3,}$')
-   
+    image_re = re.compile(r'!\[.*?\]\(.*?\)')  # Markdown-Bild-Zeile
 
     found_salute = False
     i = 0
     j = 0
-    while (i+j) < len(lines) and j < 6:
-        line = remove_social_links_from_line(lines[i+j])
+    while (i + j) < len(lines) and j < 6:
+        line = remove_social_links_from_line(lines[i + j])
         line_stripped = line.strip()
-       
-        # Wenn Grußformel erkannt
-        if not found_salute and salute_re.match(line_stripped):
+
+        if not found_salute and is_salutation_line(line_stripped):
             found_salute = True
             j += 1
         elif found_salute:
-            if separator_re.match(line_stripped):
+            if separator_re.match(line_stripped) or image_re.search(line_stripped):
                 break
             else:
                 j += 1
         else:
             i += 1
-        
+
         result.append(line)
 
     return "\n".join(result).strip()
@@ -808,7 +914,8 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         markdown: The final markdown content (without signature)
         openai_api_key: OpenAI API key
         base_url: Base URL for relative image paths
-        auth_query_params: Authentication query parameters for images (optional)
+        auth_query_params: Domain-specific authentication parameters. Can be:
+                            '{"my.service-api.net": "token=abc123", "other.com": "key=xyz"}'
         image_path: Path prefix for local images
         image_prefix: Prefix for filenames
         ai_prompt: Custom AI prompt
@@ -833,20 +940,24 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
     try:
         # Prepare tasks for parallel processing
         tasks = []
-        for idx, (alt_text, src) in enumerate(image_matches, 1):
+        for idx, (alt_text, src) in enumerate(image_matches, 1):            
             try:
                 # Create absolute URL
                 if base_url and not src.startswith(('http://', 'https://', 'data:')):
                     full_url = urljoin(base_url, src)
-                    if auth_query_params:
+                else:
+                    full_url = src
+                
+                # Apply domain-specific auth parameters for ALL URLs (not just relative ones)
+                if auth_query_params and not src.startswith('data:'):
+                    domain_auth_params = get_auth_params_for_domain(auth_query_params, full_url)
+                    if domain_auth_params:
                         parsed_url = urlparse(full_url)
                         query = parsed_url.query
                         if query:
-                            full_url += f"&{auth_query_params}"
+                            full_url += f"&{domain_auth_params}"
                         else:
-                            full_url += f"?{auth_query_params}"
-                else:
-                    full_url = src
+                            full_url += f"?{domain_auth_params}"
                     
                 # Skip data URLs (base64 embedded images)
                 if src.startswith('data:'):
@@ -923,6 +1034,62 @@ def process_images_parallel_with_ai(markdown, openai_api_key, base_url, auth_que
         except Exception as e:
             log.warning(f"Failed to delete temp directory {temp_dir}: {str(e)}")
             
+def get_auth_params_for_domain(auth_config, url):
+    """
+    Ermittelt die passenden Auth-Parameter für eine URL basierend auf ihrer Domain.
+    
+    Args:
+        auth_config: String (backward compatibility) oder Dict mit Domain-Auth-Mapping
+        url: Die URL für die Auth-Parameter gesucht werden
+    
+    Returns:
+        String mit Auth-Parametern oder leerer String
+    
+    Expected auth_config format (JSON):
+    {
+        "my.service-api.net": "token=abc123&user=john",
+        "other-domain.com": "apikey=xyz789",
+        "default": "common_param=value"  # optional fallback
+    }
+    """
+    if not auth_config:
+        return ""
+    
+    # Backward compatibility: Wenn auth_config ein String ist
+    if isinstance(auth_config, dict):
+        auth_dict = auth_config
+    else:
+        log.warning(f"Invalid auth_config type: {type(auth_config)}")
+        return ""
+    
+    # Extrahiere Domain aus URL
+    try:
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.lower()
+        
+        # Suche exakte Domain-Übereinstimmung
+        if domain in auth_dict:
+            log.debug(f"Found auth params for domain {domain}")
+            return auth_dict[domain]
+        
+        # Suche nach Subdomain-Übereinstimmung (z.B. api.domain.com -> domain.com)
+        for auth_domain in auth_dict.keys():
+            if auth_domain != "default" and domain.endswith('.' + auth_domain):
+                log.debug(f"Found auth params for parent domain {auth_domain} (url domain: {domain})")
+                return auth_dict[auth_domain]
+        
+        # Fallback auf default
+        if "default" in auth_dict:
+            log.debug(f"Using default auth params for domain {domain}")
+            return auth_dict["default"]
+            
+        log.debug(f"No auth params found for domain {domain}")
+        return ""
+        
+    except Exception as e:
+        log.error(f"Error parsing URL {url} for auth params: {str(e)}")
+        return ""
+
 if __name__ == "__main__":
     import argparse
     
