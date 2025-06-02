@@ -368,7 +368,7 @@ def html_to_markdown():
     
     auth_config = [];
     if isinstance(auth_query_params, str):
-        # Prüfe ob es JSON ist
+        # Check if it is JSON
         try:
             auth_config = json.loads(auth_query_params)
         except (json.JSONDecodeError, TypeError):
