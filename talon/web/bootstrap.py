@@ -95,7 +95,19 @@ known_salutations = {
         "best regards", "sincerely", "yours truly", "respectfully", "with gratitude", "thanks"
     ]
 }
+all_salutations = set(s.lower() for s in known_english_salutations)
+for lang_list in known_salutations.values():
+    all_salutations.update(s.lower() for s in lang_list)
 
+known_en_pattern = re.compile(
+    r'(?i)^\s*((?:' +
+    '|'.join(re.escape(s) for s in known_english_salutations) +
+    r'\s*/\s*[^/]{2,50})|(?:[^/]{2,50}\s*/\s*' +
+    '|'.join(re.escape(s) for s in known_english_salutations) +
+    r')|(' +
+    '|'.join(re.escape(s) for s in known_english_salutations) +
+    r'))\s*[,:\s]*$'
+)
 
 talon.init()
 
@@ -566,22 +578,13 @@ def remove_social_links_from_line(line: str) -> str:
     return social_re.sub('', line).strip()
 
 def is_salutation_line(line: str) -> bool:
-    """
-    Returns True if the line is a known English salutation or a bilingual salutation
-    where at least one part is a known English salutation (e.g. 'Best regards / Med venlig hilsen').
-    """
-    known = r'(' + '|'.join(re.escape(s) for s in known_english_salutations) + r')'
-    any_phrase = r'[^/]{2,50}'  # any other phrase (except just /), 2–50 characters
+    line_clean = line.strip().lower().strip("!,: ")
 
-    # Matches:
-    # - known English salutation alone
-    # - known English salutation + local (A / B or B / A)
-    # - optional punctuation at the end
-    pattern = re.compile(
-        rf'(?i)^\s*((?:{known}\s*/\s*{any_phrase})|(?:{any_phrase}\s*/\s*{known})|{known})\s*[,:\s]*$'
-    )
-
-    return pattern.match(line.strip()) is not None
+    if line_clean in all_salutations:
+        return True
+    if known_en_pattern.match(line.strip()):
+        return True
+    return False
 
 def extract_content_until_salutation(markdown):
     """
